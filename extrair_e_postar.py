@@ -44,51 +44,110 @@ def identificar_formato(texto):
 
 def identificar_tamanho(texto):
     m = re.search(r'(\d+(?:\.\d+)?\s*(?:GB|MB))', texto, re.IGNORECASE)
-    return m.group(1).upper() if m else "600 MB"
+    return m.group(1).upper() if m else "1.1 GB"
 
-def identificar_idioma_preciso(html_completo):
-    # Procura estritamente pelas palavras chave no corpo do post
-    texto_lower = html_completo.lower()
-
-    if any(k in texto_lower for k in ["pt-br", "ptbr", "português", "portugues", "traduzido pt", "dublado pt"]):
+def identificar_idioma_preciso(html_completo, url_alvo):
+    if "isoptbr.com" in url_alvo:
         return "Português (PT-BR)"
-    elif any(k in texto_lower for k in ["espanhol", "spanish", "castellano", "español"]):
+    
+    texto_lower = html_completo.lower()
+    if any(k in texto_lower for k in ["pt-br", "ptbr", "português", "portugues", "dublado pt"]):
+        return "Português (PT-BR)"
+    elif any(k in texto_lower for k in ["espanhol", "spanish", "castellano"]):
         return "Espanhol"
-    elif any(k in texto_lower for k in ["inglês", "ingles", "english", "usa"]):
+    elif any(k in texto_lower for k in ["inglês", "english", "usa"]):
         return "Inglês"
     
     return "Português (PT-BR)"
 
-def extrair_link_download_profundo(html, url_alvo):
-    # 1. Procura por links diretos de servidores populares no HTML
-    padroes_diretos = [
+# -----------------------------------------------------------------------------
+# RASPAGEM ESPECIALIZADA PARA OS 3 SITES
+# -----------------------------------------------------------------------------
+
+def extrair_link_isoptbr(html, url_alvo):
+    # Busca links diretos de hospedagem nos botões do ISOPTBR
+    padroes = [
+        r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz|mega\.co\.nz)[^"\']+)["\']',
+        r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']'
+    ]
+    for p in padroes:
+        m = re.search(p, html, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    
+    # Busca por links de protetores de link comuns
+     links = re.findall(r'href=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE)
+     for link in links:
+         if any(k in link for k in ['download', 'file', 'link', 'drive']) and not any(k in link for k in ['isoptbr.com', 'facebook', 'twitter']):
+             return link
+             
+    return url_alvo
+
+def extrair_link_movgamezone(html, url_alvo):
+    # Busca por links diretos ou de redirecionamento de download no MovGameZone
+    padroes = [
         r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz|modsfire\.com|sharemods\.com|send\.cm|zippyshare\.com)[^"\']+)["\']',
         r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']'
     ]
-    for p in padroes_diretos:
+    for p in padroes:
         m = re.search(p, html, re.IGNORECASE)
         if m:
             return m.group(1)
 
-    # 2. Procura por qualquer link dentro de botões/tags de download
-     links_gerais = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL)
-     for link, texto in links_gerais:
+    # Captura botões com texto de download no post
+    links_gerais = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL)
+    for link, texto in links_gerais:
         texto_limpo = re.sub(r'<[^>]+>', '', texto).lower()
-        if any(k in texto_limpo for k in ['baixar', 'download', 'servidor', 'link', 'jogo']):
-            if not any(k in link for k in ['facebook', 'twitter', 'instagram', 'whatsapp', 'telegram']):
+        if any(k in texto_limpo for k in ['baixar', 'download', 'servidor', 'link', 'mega', 'mediafire']):
+            if 'movgamezone' not in link and not any(k in link for k in ['facebook', 'twitter', 'instagram', 'whatsapp', 'telegram']):
                 return link
 
     return url_alvo
 
+def extrair_link_romsfun(html, url_alvo):
+    # RomsFun utiliza uma sub-página de download ou links CDN próprios
+    m_sub = re.search(r'href=["\'](https?://romsfun\.com/download/[^"\']+)["\']', html, re.IGNORECASE)
+    if m_sub:
+        sub_url = m_sub.group(1)
+        try:
+            res_sub = requests.get(sub_url, headers=obter_headers(), timeout=10)
+            if res_sub.status_code == 200:
+                # Procura o link direto do arquivo final na subpágina
+                m_file = re.search(r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']', res_sub.text, re.IGNORECASE)
+                if m_file:
+                    return m_file.group(1)
+                
+                # Procura botões de download na subpágina
+                m_cdn = re.search(r'href=["\'](https?://cdn[^"\']+)["\']', res_sub.text, re.IGNORECASE)
+                if m_cdn:
+                    return m_cdn.group(1)
+        except Exception:
+            pass
+
+    return url_alvo
+
+def extrair_link_download_inteligente(html, url_alvo):
+    if "isoptbr.com" in url_alvo:
+        return extrair_link_isoptbr(html, url_alvo)
+    elif "movgamezone.com" in url_alvo:
+        return extrair_link_movgamezone(html, url_alvo)
+    elif "romsfun.com" in url_alvo:
+        return extrair_link_romsfun(html, url_alvo)
+    else:
+        # Fallback genérico
+        return extrair_link_movgamezone(html, url_alvo)
+
+# -----------------------------------------------------------------------------
+# MONTAGEM E FILTRAGEM DE DADOS
+# -----------------------------------------------------------------------------
+
 def extrair_screenshots_limpas(html, url_capa):
-    # Puxa todas as imagens do HTML
     todas_imgs = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
     prints_validas = []
 
     for img in todas_imgs:
         img_lower = img.lower()
-        # Evita repetir a capa e ignora ícones/banners do site
-        if img == url_capa or any(k in img_lower for k in ['logo', 'icon', 'banner', 'avatar', 'button', 'sidebar', 'related', 'favicon', 'widgets']):
+        if img == url_capa or any(k in img_lower for k in ['logo', 'icon', 'banner', 'avatar', 'button', 'sidebar', 'related', 'favicon', 'widgets', 'ads']):
             continue
         
         if img not in prints_validas:
@@ -102,13 +161,13 @@ def extrair_screenshots_limpas(html, url_capa):
 def extrair_dados_completos(html, url_alvo):
     id_jogo = extrair_id_jogo(url_alvo)
     
-    # Nome Limpo para BlackPostName
+    # Nome Limpo
     nome_limpo = id_jogo.replace('-', ' ').title()
     m_titulo = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
     if m_titulo:
-        nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|PSP|PTBR|PT-BR|PPSSPP|Download|ROM|Gamer|Gratis|-|–|\|).*$', '', m_titulo.group(1)).strip()
+        nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|PSP|PTBR|PT-BR|PPSSPP|Download|ROM|ROMs|Gamer|Gratis|-|–|\|).*$', '', m_titulo.group(1)).strip()
 
-    idioma = identificar_idioma_preciso(html)
+    idioma = identificar_idioma_preciso(html, url_alvo)
     tag_ptbr = " PT-BR" if "Português" in idioma else ""
     titulo_seo = f"{nome_limpo} ISO PPSSPP Download{tag_ptbr} Android / PC"
 
@@ -119,11 +178,11 @@ def extrair_dados_completos(html, url_alvo):
     todas_imgs = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
     capa = todas_imgs[0] if todas_imgs else "https://k-404ppsspp.blogspot.com/favicon.ico"
 
-    # Screenshots filtradas
+    # Screenshots
     prints = extrair_screenshots_limpas(html, capa)
 
-    # Link do Botão
-    link_direto = extrair_link_download_profundo(html, url_alvo)
+    # Link Direto via Filtro Específico por Site
+    link_direto = extrair_link_download_inteligente(html, url_alvo)
 
     return {
         "id": id_jogo,
@@ -167,7 +226,6 @@ def enviar_post_para_blogger(dados):
 
     link_redirecionado = f"{URL_WORKER}?id={dados['id']}"
 
-    # MONTAGEM RIGOROSA COM QUEBRAS DE LINHA EXPLICITAS (\n)
     corpo_linhas = [
         '<!-- FOTO DE CAPA -->',
         '<div class="post-cover" style="text-align: center; margin-bottom: 20px;">',
@@ -188,10 +246,9 @@ def enviar_post_para_blogger(dados):
         ''
     ]
 
-    # Insere screenshots apenas se existirem fotos válidas
     if dados['prints']:
         corpo_linhas.extend([
-            '<!-- GALERIA DE SCREENSHOTS ESTILO PLAY STORE -->',
+            '<!-- GALERIA DE SCREENSHOTS -->',
             '<div class="screenshots-wrapper">',
             '    <div class="screenshots-header-title">📸 Capturas de Tela do Jogo</div>',
             '    <div class="screenshots-box">'
@@ -215,7 +272,6 @@ def enviar_post_para_blogger(dados):
         f'        🚀 BAIXAR JOGO {dados["formato"]} ({dados["tamanho"]})',
         '    </a>',
         '',
-        '    <!-- AVISO CHAMATIVO E DESTACADO -->',
         '    <div class="dl-notice">',
         '        ⚠️ Se abrir algum anúncio ao clicar, basta fechar a guia e clicar novamente no botão!',
         '    </div>',
