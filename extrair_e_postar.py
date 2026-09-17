@@ -4,7 +4,6 @@ import re
 import time
 import random
 import requests
-from bs4 import BeautifulSoup
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -47,23 +46,21 @@ def identificar_tamanho(texto):
     m = re.search(r'(\d+(?:\.\d+)?\s*(?:GB|MB))', texto, re.IGNORECASE)
     return m.group(1).upper() if m else "600 MB"
 
-def identificar_idioma_preciso(soup, texto_completo):
-    # Procura na área principal de texto do artigo
-    artigo = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|entry', re.I))
-    texto_alvo = artigo.get_text() if artigo else texto_completo
-    texto_lower = texto_alvo.lower()
+def identificar_idioma_preciso(html_completo):
+    # Procura estritamente pelas palavras chave no corpo do post
+    texto_lower = html_completo.lower()
 
-    if any(k in texto_lower for k in ["pt-br", "ptbr", "português", "portugues", "traduzido pt"]):
+    if any(k in texto_lower for k in ["pt-br", "ptbr", "português", "portugues", "traduzido pt", "dublado pt"]):
         return "Português (PT-BR)"
-    elif any(k in texto_lower for k in ["espanhol", "spanish", "castellano"]):
+    elif any(k in texto_lower for k in ["espanhol", "spanish", "castellano", "español"]):
         return "Espanhol"
-    elif any(k in texto_lower for k in ["inglês", "ingles", "english"]):
+    elif any(k in texto_lower for k in ["inglês", "ingles", "english", "usa"]):
         return "Inglês"
     
     return "Português (PT-BR)"
 
-def extrair_link_download_profundo(soup, html, url_alvo):
-    # 1. Busca por servidores diretos conhecidos
+def extrair_link_download_profundo(html, url_alvo):
+    # 1. Procura por links diretos de servidores populares no HTML
     padroes_diretos = [
         r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz|modsfire\.com|sharemods\.com|send\.cm|zippyshare\.com)[^"\']+)["\']',
         r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']'
@@ -73,52 +70,45 @@ def extrair_link_download_profundo(soup, html, url_alvo):
         if m:
             return m.group(1)
 
-    # 2. Busca analítica por tags <a> com botões de download
-    for a in soup.find_all('a', href=True):
-        href = a['href']
-        texto_btn = a.get_text().lower()
-        if any(k in texto_btn for k in ['baixar', 'download', 'servidor', 'link']) and not href.startswith('#'):
-            if href.startswith('http'):
-                return href
+    # 2. Procura por qualquer link dentro de botões/tags de download
+     links_gerais = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL)
+     for link, texto in links_gerais:
+        texto_limpo = re.sub(r'<[^>]+>', '', texto).lower()
+        if any(k in texto_limpo for k in ['baixar', 'download', 'servidor', 'link', 'jogo']):
+            if not any(k in link for k in ['facebook', 'twitter', 'instagram', 'whatsapp', 'telegram']):
+                return link
 
     return url_alvo
 
-def extrair_screenshots_limpas(soup, url_capa):
-    # Procura imagens contidas estritamente no corpo do artigo
-    artigo = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|entry', re.I))
-    if not artigo:
-        return []
-
-    imgs_artigo = artigo.find_all('img')
+def extrair_screenshots_limpas(html, url_capa):
+    # Puxa todas as imagens do HTML
+    todas_imgs = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
     prints_validas = []
 
-    for img in imgs_artigo:
-        src = img.get('src') or img.get('data-src')
-        if not src or not src.startswith('http'):
-            continue
-
-        # Evita a capa, ícones, avatares e imagens de posts relacionados/rodapé
-        src_lower = src.lower()
-        if src == url_capa or any(k in src_lower for k in ['logo', 'icon', 'banner', 'avatar', 'button', 'sidebar', 'related']):
+    for img in todas_imgs:
+        img_lower = img.lower()
+        # Evita repetir a capa e ignora ícones/banners do site
+        if img == url_capa or any(k in img_lower for k in ['logo', 'icon', 'banner', 'avatar', 'button', 'sidebar', 'related', 'favicon', 'widgets']):
             continue
         
-        prints_validas.append(src)
+        if img not in prints_validas:
+            prints_validas.append(img)
+        
         if len(prints_validas) == 3:
             break
 
     return prints_validas
 
 def extrair_dados_completos(html, url_alvo):
-    soup = BeautifulSoup(html, 'html.parser')
     id_jogo = extrair_id_jogo(url_alvo)
     
     # Nome Limpo para BlackPostName
     nome_limpo = id_jogo.replace('-', ' ').title()
-    m_titulo = soup.find('title')
+    m_titulo = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
     if m_titulo:
-        nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|PSP|PTBR|PT-BR|PPSSPP|Download|ROM|Gamer|Gratis|-|–|\|).*$', '', m_titulo.string).strip()
+        nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|PSP|PTBR|PT-BR|PPSSPP|Download|ROM|Gamer|Gratis|-|–|\|).*$', '', m_titulo.group(1)).strip()
 
-    idioma = identificar_idioma_preciso(soup, html)
+    idioma = identificar_idioma_preciso(html)
     tag_ptbr = " PT-BR" if "Português" in idioma else ""
     titulo_seo = f"{nome_limpo} ISO PPSSPP Download{tag_ptbr} Android / PC"
 
@@ -126,14 +116,14 @@ def extrair_dados_completos(html, url_alvo):
     tamanho = identificar_tamanho(html)
 
     # Capa
-    primeira_img = soup.find('img')
-    capa = primeira_img.get('src') if primeira_img and primeira_img.get('src') else "https://k-404ppsspp.blogspot.com/favicon.ico"
+    todas_imgs = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
+    capa = todas_imgs[0] if todas_imgs else "https://k-404ppsspp.blogspot.com/favicon.ico"
 
     # Screenshots filtradas
-    prints = extrair_screenshots_limpas(soup, capa)
+    prints = extrair_screenshots_limpas(html, capa)
 
     # Link do Botão
-    link_direto = extrair_link_download_profundo(soup, html, url_alvo)
+    link_direto = extrair_link_download_profundo(html, url_alvo)
 
     return {
         "id": id_jogo,
@@ -177,7 +167,7 @@ def enviar_post_para_blogger(dados):
 
     link_redirecionado = f"{URL_WORKER}?id={dados['id']}"
 
-    # MONTAGEM FORMATADA COM QUEBRAS DE LINHA EXPLICITAS PARA O TEMA DO BLOGGER
+    # MONTAGEM RIGOROSA COM QUEBRAS DE LINHA EXPLICITAS (\n)
     corpo_linhas = [
         '<!-- FOTO DE CAPA -->',
         '<div class="post-cover" style="text-align: center; margin-bottom: 20px;">',
@@ -198,7 +188,7 @@ def enviar_post_para_blogger(dados):
         ''
     ]
 
-    # Insere screenshots apenas se existirem fotos reais do post
+    # Insere screenshots apenas se existirem fotos válidas
     if dados['prints']:
         corpo_linhas.extend([
             '<!-- GALERIA DE SCREENSHOTS ESTILO PLAY STORE -->',
