@@ -12,12 +12,18 @@ HEADERS = {
 }
 
 def extrair_id_jogo(url_origem):
-    """Gera o ID do jogo limpo a partir da URL."""
-    url_limpa = url_origem.split(']')[0].rstrip('/')
+    """Gera o ID do jogo limpo e sem caracteres inválidos a partir da URL."""
+    # Remove parametros como ?m=1 e quebras de URL
+    url_limpa = url_origem.split('?')[0].split('#')[0].split(']')[0].rstrip('/')
     partes = [p for p in url_limpa.split('/') if p and p not in ['download', 'file'] and not p.isdigit()]
     id_jogo = partes[-1] if partes else "jogo"
-    id_jogo = id_jogo.replace('.html', '').replace('.iso', '').replace('-psp-ptbr', '').replace('-ppsspp', '')
-    return id_jogo
+    
+    # Remove extensoes e sufixos comuns
+    id_jogo = re.sub(r'(\.html|\.iso|-psp-ptbr|-ppsspp|-psp)$', '', id_jogo, flags=re.IGNORECASE)
+    # Mantem apenas letras, numeros e hifens para nao quebrar a URL do Firebase
+    id_jogo = re.sub(r'[^a-zA-Z0-9_-]', '', id_jogo)
+    
+    return id_jogo if id_jogo else "jogo_ppsspp"
 
 def buscar_link_isoptbr(html):
     """Procura links diretos/servidores no ISOPTBR."""
@@ -34,12 +40,9 @@ def buscar_link_movgamezone(html):
 def buscar_link_romsfun(url):
     """Pega os links do Romsfun requisitando a página de download."""
     try:
-        if "/download/" not in url:
-            url_dl = url.rstrip('/') + "/download"
-        else:
-            url_dl = url
-
+        url_dl = url.rstrip('/') + "/download" if "/download/" not in url else url
         res = requests.get(url_dl, headers=HEADERS, timeout=15)
+        
         if res.status_code == 200:
             padrao = r'href=["\'](https?://[^"\']+\.(?:iso|cso|7z|zip)[^"\']*)["\']'
             match = re.search(padrao, res.text, re.IGNORECASE)
@@ -62,7 +65,7 @@ def extrair_titulo_jogo(html, id_fallback):
         titulo_limpo = re.sub(r'(?i)\s*(?:ISO|PSP|PTBR|PPSSPP|Download|ROM|Gamer|Gratis|-|–|\|).*$', '', titulo).strip()
         if titulo_limpo and len(titulo_limpo) > 2:
             return titulo_limpo
-    return id_fallback.replace('-', ' ').title()
+    return id_fallback.replace('-', ' ').replace('_', ' ').title()
 
 def salvar_no_firebase_ppsspp(url_origem, link_direto, nome_jogo):
     """Salva diretamente no banco Firebase no nó /ppsspp/."""
@@ -77,7 +80,10 @@ def salvar_no_firebase_ppsspp(url_origem, link_direto, nome_jogo):
     }
 
     try:
-        endpoint = f"{FIREBASE_BASE_URL}/ppsspp/{id_jogo}.json"
+        # Montagem segura da URL do Firebase terminando com .json
+        base_url = FIREBASE_BASE_URL.rstrip('/')
+        endpoint = f"{base_url}/ppsspp/{id_jogo}.json"
+        
         res = requests.patch(endpoint, json=payload, timeout=10)
         if res.status_code == 200:
             print(f"✅ SALVO NO FIREBASE (/ppsspp/{id_jogo}):")
@@ -85,7 +91,7 @@ def salvar_no_firebase_ppsspp(url_origem, link_direto, nome_jogo):
             print(f"   └─ Link: {link_direto}")
             return id_jogo
         else:
-            print(f"❌ Erro ao salvar no Firebase: {res.status_code} - {res.text}")
+            print(f"❌ Erro ao salvar no Firebase ({res.status_code}): {res.text}")
     except Exception as e:
         print(f"❌ Falha de conexão com Firebase: {e}")
     return None
@@ -96,27 +102,30 @@ def processar_url_ppsspp(url_alvo):
     
     id_fallback = extrair_id_jogo(url_alvo)
     link_direto = None
-    nome_jogo = id_fallback.replace('-', ' ').title()
+    nome_jogo = id_fallback.replace('-', ' ').replace('_', ' ').title()
 
     try:
         res = requests.get(url_alvo, headers=HEADERS, timeout=15)
-        html = res.text
-        nome_jogo = extrair_titulo_jogo(html, id_fallback)
+        if res.status_code == 200:
+            html = res.text
+            nome_jogo = extrair_titulo_jogo(html, id_fallback)
 
-        if "isoptbr.com" in url_alvo:
-            link_direto = buscar_link_isoptbr(html)
-        elif "movgamezone.com" in url_alvo:
-            link_direto = buscar_link_movgamezone(html)
-        elif "romsfun.com" in url_alvo:
-            link_direto = buscar_link_romsfun(url_alvo)
+            if "isoptbr.com" in url_alvo:
+                link_direto = buscar_link_isoptbr(html)
+            elif "movgamezone.com" in url_alvo:
+                link_direto = buscar_link_movgamezone(html)
+            elif "romsfun.com" in url_alvo:
+                link_direto = buscar_link_romsfun(url_alvo)
+            else:
+                # Fallback genérico para links Mediafire/Drive/Mega
+                match = re.search(r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz)[^"\']+)["\']', html, re.IGNORECASE)
+                if match:
+                    link_direto = match.group(1)
         else:
-            # Fallback genérico para links Mediafire/Drive/Mega
-            match = re.search(r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz)[^"\']+)["\']', html, re.IGNORECASE)
-            if match:
-                link_direto = match.group(1)
+            print(f"⚠️ Erro ao acessar a página ({res.status_code})")
 
     except Exception as e:
-        print(f"❌ Erro ao acessar a URL: {e}")
+        print(f"❌ Erro na requisição da URL: {e}")
 
     if link_direto:
         salvar_no_firebase_ppsspp(url_alvo, link_direto, nome_jogo)
