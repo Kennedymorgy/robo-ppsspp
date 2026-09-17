@@ -61,46 +61,60 @@ def identificar_idioma_preciso(html_completo, url_alvo):
     return "Espanhol / Inglês"
 
 # -----------------------------------------------------------------------------
-# RASPAGEM DE LINKS (JOGO + SAVE DATA + TEXTURAS)
+# RASPAGEM DE LINKS AVANÇADA (JOGO + SAVE DATA + TEXTURAS)
 # -----------------------------------------------------------------------------
 
 def extrair_links_completos(html, url_alvo):
     links_resultado = {
-        "jogo": url_alvo,
+        "jogo": "",
         "savedata": "",
         "texturas": ""
     }
 
-    # Busca todas as tags de link com texto
+    # Busca todas as tags de link com atributos
     tags_a = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL)
 
     for href, texto in tags_a:
         texto_limpo = re.sub(r'<[^>]+>', '', texto).lower()
+        href_lower = href.lower()
         
-        # Ignora redes sociais e navegação interna
-        if any(domain in href for domain in ['facebook.com', 'twitter.com', 'instagram.com', 'whatsapp.com', 'telegram.me']):
+        # Ignora redes sociais, navegação e anúncios conhecidos
+        if any(domain in href_lower for domain in ['facebook.com', 'twitter.com', 'instagram.com', 'whatsapp.com', 'telegram.me', 'monetag', 'doubleclick']):
             continue
 
         # Detecta SaveData
-        if any(k in texto_limpo for k in ['save', 'savedata', 'data 100%']):
+        if any(k in texto_limpo or k in href_lower for k in ['save', 'savedata', 'data 100%']):
             if not links_resultado["savedata"]:
                 links_resultado["savedata"] = href
                 continue
 
         # Detecta Texturas
-        if any(k in texto_limpo for k in ['texture', 'textura', 'texturas']):
+        if any(k in texto_limpo or k in href_lower for k in ['texture', 'textura', 'texturas']):
             if not links_resultado["texturas"]:
                 links_resultado["texturas"] = href
                 continue
 
-        # Detecta Link do Jogo Principal (MediaFire, Mega, Drive ou arquivos diretos)
-        if any(k in href for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm']):
-            if links_resultado["jogo"] == url_alvo:
+        # Detecta Link do Jogo Principal (Servidores de Download e Extensões)
+        if any(k in href_lower for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive', 'upload']):
+            if not links_resultado["jogo"]:
                 links_resultado["jogo"] = href
 
-        elif re.search(r'\.(iso|cso|zip|7z|rar)$', href, re.IGNORECASE):
-            if links_resultado["jogo"] == url_alvo:
+        elif re.search(r'\.(iso|cso|zip|7z|rar)$', href_lower):
+            if not links_resultado["jogo"]:
                 links_resultado["jogo"] = href
+
+    # Fallback: Se não achou link direto de servidor, pega o link do botão de download da página
+    if not links_resultado["jogo"]:
+        for href, texto in tags_a:
+            texto_limpo = re.sub(r'<[^>]+>', '', texto).lower()
+            if any(k in texto_limpo for k in ['download', 'baixar', 'servidor', 'opção', 'link']):
+                if not any(domain in href for domain in ['facebook.com', 'twitter.com', 'instagram.com', 'whatsapp.com', 'telegram.me']):
+                    links_resultado["jogo"] = href
+                    break
+
+    # Se ainda assim não achar nada, usa a própria URL alvo como segurança
+    if not links_resultado["jogo"]:
+        links_resultado["jogo"] = url_alvo
 
     return links_resultado
 
@@ -195,6 +209,7 @@ def enviar_post_para_blogger(dados):
     link_redirecionado_jogo = f"{URL_WORKER}?id={dados['id']}"
     link_redirecionado_save = f"{URL_WORKER}?id={dados['id']}&type=save" if dados['link_savedata'] else ""
 
+    # ESTRUTURA HTML COM CARDS SEPARADOS PARA NÃO EMBALANÇAR/MISTURAR DADOS
     corpo_linhas = [
         '<!-- FOTO DE CAPA -->',
         '<div class="post-cover" style="text-align: center; margin-bottom: 20px;">',
@@ -203,12 +218,34 @@ def enviar_post_para_blogger(dados):
         '',
         f'BlackPostName={dados["nome_limpo"]}',
         '<!--more-->',
-        '<!-- VARIÁVEIS DE INFORMAÇÃO -->',
-        'InfoPlataforma=PPSSPP (Android / PC)',
-        f'InfoIdioma={dados["idioma"]}',
-        f'InfoTamanho={dados["tamanho"]}',
-        f'InfoFormato={dados["formato"]}',
-        f'InfoMod={dados["mod"]}',
+        '',
+        '<!-- GRID DE INFORMAÇÕES DO JOGO (CADA ITEM EM SEU CARD) -->',
+        '<div class="info-grid">',
+        '    <div class="info-card">',
+        '        <span class="info-label">📱 NOME</span>',
+        f'        <span class="info-value">{dados["nome_limpo"]}</span>',
+        '    </div>',
+        '    <div class="info-card">',
+        '        <span class="info-label">🔧 PLATAFORMA</span>',
+        '        <span class="info-value">PPSSPP (Android / PC)</span>',
+        '    </div>',
+        '    <div class="info-card">',
+        '        <span class="info-label">🌐 IDIOMA</span>',
+        f'        <span class="info-value">{dados["idioma"]}</span>',
+        '    </div>',
+        '    <div class="info-card">',
+        '        <span class="info-label">📦 TAMANHO</span>',
+        f'        <span class="info-value">{dados["tamanho"]}</span>',
+        '    </div>',
+        '    <div class="info-card">',
+        '        <span class="info-label">⚡ FORMATO</span>',
+        f'        <span class="info-value">{dados["formato"]}</span>',
+        '    </div>',
+        '    <div class="info-card">',
+        '        <span class="info-label">🎮 EXTRA</span>',
+        f'        <span class="info-value">{dados["mod"]}</span>',
+        '    </div>',
+        '</div>',
         '',
         '<!-- DESCRIÇÃO INICIAL -->',
         f'<p>Baixe agora <b>{dados["nome_limpo"]}</b> para o emulador PPSSPP no Android e PC. Jogo completo em formato {dados["formato"]} ({dados["tamanho"]}) em {dados["idioma"]} com ótimos gráficos e 100% jogável!</p>',
