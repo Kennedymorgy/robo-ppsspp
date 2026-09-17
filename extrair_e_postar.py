@@ -4,6 +4,7 @@ import re
 import time
 import random
 import requests
+from bs4 import BeautifulSoup
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -12,7 +13,7 @@ from email.mime.multipart import MIMEMultipart
 FIREBASE_BASE_URL = "https://meublog-apks-default-rtdb.firebaseio.com"
 URL_WORKER = "https://orange-star-d066.claudiokennedymorgy.workers.dev"
 
-# CONFIGURAÇÕES DE E-MAIL (Buscadas das Secrets do GitHub)
+# CONFIGURAÇÕES DE E-MAIL (Secrets do GitHub)
 GMAIL_USER = os.environ.get("GMAIL_USER")        
 GMAIL_PASS = os.environ.get("GMAIL_PASS")        
 BLOGGER_EMAIL = os.environ.get("BLOGGER_EMAIL")  
@@ -46,62 +47,93 @@ def identificar_tamanho(texto):
     m = re.search(r'(\d+(?:\.\d+)?\s*(?:GB|MB))', texto, re.IGNORECASE)
     return m.group(1).upper() if m else "600 MB"
 
-def identificar_idiomas(texto):
-    texto_lower = texto.lower()
-    idiomas = []
-    
-    if any(k in texto_lower for k in ["ptbr", "pt-br", "português", "portugues", "dublado", "traduzido"]):
-        idiomas.append("Português (PT-BR)")
-    if any(k in texto_lower for k in ["espanhol", "spanish", "castellano", "esp"]):
-        idiomas.append("Espanhol")
-    if any(k in texto_lower for k in ["inglês", "ingles", "english", "usa", "en"]):
-        idiomas.append("Inglês")
-    if any(k in texto_lower for k in ["francês", "frances", "french"]):
-        idiomas.append("Francês")
-    if any(k in texto_lower for k in ["japonês", "japones", "japanese", "jp"]):
-        idiomas.append("Japonês")
+def identificar_idioma_preciso(soup, texto_completo):
+    # Procura na área principal de texto do artigo
+    artigo = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|entry', re.I))
+    texto_alvo = artigo.get_text() if artigo else texto_completo
+    texto_lower = texto_alvo.lower()
 
-    return " / ".join(idiomas) if idiomas else "Português / Inglês"
+    if any(k in texto_lower for k in ["pt-br", "ptbr", "português", "portugues", "traduzido pt"]):
+        return "Português (PT-BR)"
+    elif any(k in texto_lower for k in ["espanhol", "spanish", "castellano"]):
+        return "Espanhol"
+    elif any(k in texto_lower for k in ["inglês", "ingles", "english"]):
+        return "Inglês"
+    
+    return "Português (PT-BR)"
+
+def extrair_link_download_profundo(soup, html, url_alvo):
+    # 1. Busca por servidores diretos conhecidos
+    padroes_diretos = [
+        r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz|modsfire\.com|sharemods\.com|send\.cm|zippyshare\.com)[^"\']+)["\']',
+        r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']'
+    ]
+    for p in padroes_diretos:
+        m = re.search(p, html, re.IGNORECASE)
+        if m:
+            return m.group(1)
+
+    # 2. Busca analítica por tags <a> com botões de download
+    for a in soup.find_all('a', href=True):
+        href = a['href']
+        texto_btn = a.get_text().lower()
+        if any(k in texto_btn for k in ['baixar', 'download', 'servidor', 'link']) and not href.startswith('#'):
+            if href.startswith('http'):
+                return href
+
+    return url_alvo
+
+def extrair_screenshots_limpas(soup, url_capa):
+    # Procura imagens contidas estritamente no corpo do artigo
+    artigo = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|entry', re.I))
+    if not artigo:
+        return []
+
+    imgs_artigo = artigo.find_all('img')
+    prints_validas = []
+
+    for img in imgs_artigo:
+        src = img.get('src') or img.get('data-src')
+        if not src or not src.startswith('http'):
+            continue
+
+        # Evita a capa, ícones, avatares e imagens de posts relacionados/rodapé
+        src_lower = src.lower()
+        if src == url_capa or any(k in src_lower for k in ['logo', 'icon', 'banner', 'avatar', 'button', 'sidebar', 'related']):
+            continue
+        
+        prints_validas.append(src)
+        if len(prints_validas) == 3:
+            break
+
+    return prints_validas
 
 def extrair_dados_completos(html, url_alvo):
+    soup = BeautifulSoup(html, 'html.parser')
     id_jogo = extrair_id_jogo(url_alvo)
     
-    # Nome Limpo do Jogo para o BlackPostName
+    # Nome Limpo para BlackPostName
     nome_limpo = id_jogo.replace('-', ' ').title()
-    m_titulo = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+    m_titulo = soup.find('title')
     if m_titulo:
-        nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|PSP|PTBR|PT-BR|PPSSPP|Download|ROM|Gamer|Gratis|-|–|\|).*$', '', m_titulo.group(1)).strip()
+        nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|PSP|PTBR|PT-BR|PPSSPP|Download|ROM|Gamer|Gratis|-|–|\|).*$', '', m_titulo.string).strip()
 
-    # Título SEO Otimizado para Buscas do Google
-    idiomas_detectados = identificar_idiomas(html + " " + url_alvo)
-    tag_ptbr = " PT-BR" if "Português" in idiomas_detectados else ""
+    idioma = identificar_idioma_preciso(soup, html)
+    tag_ptbr = " PT-BR" if "Português" in idioma else ""
     titulo_seo = f"{nome_limpo} ISO PPSSPP Download{tag_ptbr} Android / PC"
 
     formato = identificar_formato(html + " " + url_alvo)
     tamanho = identificar_tamanho(html)
 
-    # Captura de Imagens
-    imagens = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
-    imagens_filtradas = [img for img in imagens if not any(k in img for k in ["logo", "icon", "avatar", "banner", "button"])]
-    
-    capa = imagens_filtradas[0] if imagens_filtradas else "https://k-404ppsspp.blogspot.com/favicon.ico"
-    prints = imagens_filtradas[1:4] if len(imagens_filtradas) > 1 else []
+    # Capa
+    primeira_img = soup.find('img')
+    capa = primeira_img.get('src') if primeira_img and primeira_img.get('src') else "https://k-404ppsspp.blogspot.com/favicon.ico"
 
-    # Busca Avançada pelo Link Direto de Download
-    link_direto = None
-    padroes_links = [
-        r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz|modsfire\.com|sharemods\.com)[^"\']+)["\']',
-        r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']'
-    ]
-    for p in padroes_links:
-        m_link = re.search(p, html, re.IGNORECASE)
-        if m_link:
-            link_direto = m_link.group(1)
-            break
+    # Screenshots filtradas
+    prints = extrair_screenshots_limpas(soup, capa)
 
-    # Se não achar o link direto, usa a própria URL alvo para garantir que o Worker redirecione
-    if not link_direto:
-        link_direto = url_alvo
+    # Link do Botão
+    link_direto = extrair_link_download_profundo(soup, html, url_alvo)
 
     return {
         "id": id_jogo,
@@ -111,7 +143,7 @@ def extrair_dados_completos(html, url_alvo):
         "prints": prints,
         "formato": formato,
         "tamanho": tamanho,
-        "idioma": idiomas_detectados,
+        "idioma": idioma,
         "link_direto": link_direto,
         "url_original": url_alvo
     }
@@ -145,62 +177,72 @@ def enviar_post_para_blogger(dados):
 
     link_redirecionado = f"{URL_WORKER}?id={dados['id']}"
 
-    # MONTAGEM RIGOROSA COM QUEBRAS DE LINHA REAIS (\n) PARA O TEMA LER AS VARIÁVEIS
-    html_content = (
-        f'<!-- FOTO DE CAPA -->\n'
-        f'<div class="post-cover" style="text-align: center; margin-bottom: 20px;">\n'
-        f'    <img src="{dados["capa"]}" alt="{dados["nome_limpo"]}" />\n'
-        f'</div>\n\n'
-        f'BlackPostName={dados["nome_limpo"]}\n'
-        f'<!--more-->\n'
-        f'<!-- VARIÁVEIS DE INFORMAÇÃO -->\n'
-        f'InfoPlataforma=PPSSPP (Android / PC)\n'
-        f'InfoIdioma={dados["idioma"]}\n'
-        f'InfoTamanho={dados["tamanho"]}\n'
-        f'InfoFormato={dados["formato"]}\n'
-        f'InfoMod=SaveData 100%\n\n'
-        f'<!-- DESCRIÇÃO INICIAL -->\n'
-        f'<p>Baixe agora <b>{dados["nome_limpo"]}</b> para o emulador PPSSPP no Android e PC. Jogo completo em formato {dados["formato"]} ({dados["tamanho"]}) em {dados["idioma"]} com ótimos gráficos e 100% jogável!</p>\n\n'
-    )
+    # MONTAGEM FORMATADA COM QUEBRAS DE LINHA EXPLICITAS PARA O TEMA DO BLOGGER
+    corpo_linhas = [
+        '<!-- FOTO DE CAPA -->',
+        '<div class="post-cover" style="text-align: center; margin-bottom: 20px;">',
+        f'    <img src="{dados["capa"]}" alt="{dados["nome_limpo"]}" />',
+        '</div>',
+        '',
+        f'BlackPostName={dados["nome_limpo"]}',
+        '<!--more-->',
+        '<!-- VARIÁVEIS DE INFORMAÇÃO -->',
+        'InfoPlataforma=PPSSPP (Android / PC)',
+        f'InfoIdioma={dados["idioma"]}',
+        f'InfoTamanho={dados["tamanho"]}',
+        f'InfoFormato={dados["formato"]}',
+        'InfoMod=SaveData 100%',
+        '',
+        '<!-- DESCRIÇÃO INICIAL -->',
+        f'<p>Baixe agora <b>{dados["nome_limpo"]}</b> para o emulador PPSSPP no Android e PC. Jogo completo em formato {dados["formato"]} ({dados["tamanho"]}) em {dados["idioma"]} com ótimos gráficos e 100% jogável!</p>',
+        ''
+    ]
 
+    # Insere screenshots apenas se existirem fotos reais do post
     if dados['prints']:
-        html_content += (
-            '<!-- GALERIA DE SCREENSHOTS ESTILO PLAY STORE -->\n'
-            '<div class="screenshots-wrapper">\n'
-            '    <div class="screenshots-header-title">📸 Capturas de Tela do Jogo</div>\n'
-            '    <div class="screenshots-box">\n'
-        )
+        corpo_linhas.extend([
+            '<!-- GALERIA DE SCREENSHOTS ESTILO PLAY STORE -->',
+            '<div class="screenshots-wrapper">',
+            '    <div class="screenshots-header-title">📸 Capturas de Tela do Jogo</div>',
+            '    <div class="screenshots-box">'
+        ])
         for i, img in enumerate(dados['prints'], start=1):
-            html_content += f'        <img src="{img}" alt="{dados["nome_limpo"]} Gameplay {i}"/>\n'
+            corpo_linhas.append(f'        <img src="{img}" alt="{dados["nome_limpo"]} Gameplay {i}"/>')
         
-        html_content += (
-            '    </div>\n'
-            '    <div class="scroll-indicator">👈 Deslize para o lado para ver mais fotos 📸 👉</div>\n'
-            '</div>\n\n'
-        )
+        corpo_linhas.extend([
+            '    </div>',
+            '    <div class="scroll-indicator">👈 Deslize para o lado para ver mais fotos 📸 👉</div>',
+            '</div>',
+            ''
+        ])
 
-    html_content += (
-        '<!-- ÁREA DE DOWNLOADS -->\n'
-        '<div class="post-dl-box">\n'
-        '    <div class="post-dl-title">📥 Links para Download Direto</div>\n\n'
-        f'    <a href="{link_redirecionado}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-green">\n'
-        f'        🚀 BAIXAR JOGO {dados["formato"]} ({dados["tamanho"]})\n'
-        '    </a>\n\n'
-        '    <!-- AVISO CHAMATIVO E DESTACADO -->\n'
-        '    <div class="dl-notice">\n'
-        '        ⚠️ Se abrir algum anúncio ao clicar, basta fechar a guia e clicar novamente no botão!\n'
-        '    </div>\n'
-        '</div>\n\n'
-        '<!-- COMO INSTALAR -->\n'
-        '<div class="tutorial-box">\n'
-        '    <div class="tutorial-title">📌 Como Instalar e Jogar:</div>\n'
-        '    <ol class="tutorial-list">\n'
-        f'        <li>Baixe o jogo em formato <strong>{dados["formato"]}</strong> no botão acima.</li>\n'
-        '        <li>Instale o emulador <strong>PPSSPP Gold</strong> no seu celular Android ou PC.</li>\n'
-        '        <li>Abra o emulador PPSSPP, navegue até a pasta onde salvou o jogo (geralmente em "Downloads") e clique para jogar!</li>\n'
-        '    </ol>\n'
+    corpo_linhas.extend([
+        '<!-- ÁREA DE DOWNLOADS -->',
+        '<div class="post-dl-box">',
+        '    <div class="post-dl-title">📥 Links para Download Direto</div>',
+        '',
+        f'    <a href="{link_redirecionado}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-green">',
+        f'        🚀 BAIXAR JOGO {dados["formato"]} ({dados["tamanho"]})',
+        '    </a>',
+        '',
+        '    <!-- AVISO CHAMATIVO E DESTACADO -->',
+        '    <div class="dl-notice">',
+        '        ⚠️ Se abrir algum anúncio ao clicar, basta fechar a guia e clicar novamente no botão!',
+        '    </div>',
+        '</div>',
+        '',
+        '<!-- COMO INSTALAR -->',
+        '<div class="tutorial-box">',
+        '    <div class="tutorial-title">📌 Como Instalar e Jogar:</div>',
+        '    <ol class="tutorial-list">',
+        f'        <li>Baixe o jogo em formato <strong>{dados["formato"]}</strong> no botão acima.</li>',
+        '        <li>Instale o emulador <strong>PPSSPP Gold</strong> no seu celular Android ou PC.</li>',
+        '        <li>Abra o emulador PPSSPP, navegue até a pasta onde salvou o jogo (geralmente em "Downloads") e clique para jogar!</li>',
+        '    </ol>',
         '</div>'
-    )
+    ])
+
+    html_content = "\n".join(corpo_linhas)
 
     msg = MIMEMultipart()
     msg['From'] = GMAIL_USER
