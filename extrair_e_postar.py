@@ -29,7 +29,7 @@ def extrair_id_jogo(url_origem):
     url_limpa = url_origem.split('?')[0].split('#')[0].rstrip('/')
     partes = [p for p in url_limpa.split('/') if p and p not in ['download', 'file'] and not p.isdigit()]
     id_jogo = partes[-1] if partes else "jogo"
-    id_jogo = re.sub(r'(\.html|\.iso|\.cso|\.zip|\.7z|-psp-ptbr|-ppsspp|-psp)$', '', id_jogo, flags=re.IGNORECASE)
+    id_jogo = re.sub(r'(\.html|\.iso|\.cso|\.zip|\.7z|-psp-ptbr|-ppsspp|-psp|-ps2-ptbr|-ps2)$', '', id_jogo, flags=re.IGNORECASE)
     return re.sub(r'[^a-zA-Z0-9_-]', '', id_jogo).lower()
 
 def identificar_formato(texto):
@@ -54,84 +54,55 @@ def identificar_idioma_preciso(html_completo, url_alvo):
     if any(k in texto_lower for k in ["pt-br", "ptbr", "português", "portugues", "dublado pt"]):
         return "Português (PT-BR)"
     elif any(k in texto_lower for k in ["espanhol", "spanish", "castellano"]):
-        return "Espanhol"
+        return "Espanhol / Inglês"
     elif any(k in texto_lower for k in ["inglês", "english", "usa"]):
         return "Inglês"
     
-    return "Português (PT-BR)"
+    return "Espanhol / Inglês"
 
 # -----------------------------------------------------------------------------
-# RASPAGEM ESPECIALIZADA PARA OS 3 SITES
+# RASPAGEM DE LINKS (JOGO + SAVE DATA + TEXTURAS)
 # -----------------------------------------------------------------------------
 
-def extrair_link_isoptbr(html, url_alvo):
-    padroes = [
-        r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz|mega\.co\.nz)[^"\']+)["\']',
-        r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']'
-    ]
-    for p in padroes:
-        m = re.search(p, html, re.IGNORECASE)
-        if m:
-            return m.group(1)
-    
-    links = re.findall(r'href=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE)
-    for link in links:
-        if any(k in link for k in ['download', 'file', 'link', 'drive']) and not any(k in link for k in ['isoptbr.com', 'facebook', 'twitter']):
-            return link
-             
-    return url_alvo
+def extrair_links_completos(html, url_alvo):
+    links_resultado = {
+        "jogo": url_alvo,
+        "savedata": "",
+        "texturas": ""
+    }
 
-def extrair_link_movgamezone(html, url_alvo):
-    padroes = [
-        r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz|modsfire\.com|sharemods\.com|send\.cm|zippyshare\.com)[^"\']+)["\']',
-        r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']'
-    ]
-    for p in padroes:
-        m = re.search(p, html, re.IGNORECASE)
-        if m:
-            return m.group(1)
+    # Busca todas as tags de link com texto
+    tags_a = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL)
 
-    links_gerais = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL)
-    for link, texto in links_gerais:
+    for href, texto in tags_a:
         texto_limpo = re.sub(r'<[^>]+>', '', texto).lower()
-        if any(k in texto_limpo for k in ['baixar', 'download', 'servidor', 'link', 'mega', 'mediafire']):
-            if 'movgamezone' not in link and not any(k in link for k in ['facebook', 'twitter', 'instagram', 'whatsapp', 'telegram']):
-                return link
+        
+        # Ignora redes sociais e navegação interna
+        if any(domain in href for domain in ['facebook.com', 'twitter.com', 'instagram.com', 'whatsapp.com', 'telegram.me']):
+            continue
 
-    return url_alvo
+        # Detecta SaveData
+        if any(k in texto_limpo for k in ['save', 'savedata', 'data 100%']):
+            if not links_resultado["savedata"]:
+                links_resultado["savedata"] = href
+                continue
 
-def extrair_link_romsfun(html, url_alvo):
-    m_sub = re.search(r'href=["\'](https?://romsfun\.com/download/[^"\']+)["\']', html, re.IGNORECASE)
-    if m_sub:
-        sub_url = m_sub.group(1)
-        try:
-            res_sub = requests.get(sub_url, headers=obter_headers(), timeout=10)
-            if res_sub.status_code == 200:
-                m_file = re.search(r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']', res_sub.text, re.IGNORECASE)
-                if m_file:
-                    return m_file.group(1)
-                
-                m_cdn = re.search(r'href=["\'](https?://cdn[^"\']+)["\']', res_sub.text, re.IGNORECASE)
-                if m_cdn:
-                    return m_cdn.group(1)
-        except Exception:
-            pass
+        # Detecta Texturas
+        if any(k in texto_limpo for k in ['texture', 'textura', 'texturas']):
+            if not links_resultado["texturas"]:
+                links_resultado["texturas"] = href
+                continue
 
-    return url_alvo
+        # Detecta Link do Jogo Principal (MediaFire, Mega, Drive ou arquivos diretos)
+        if any(k in href for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm']):
+            if links_resultado["jogo"] == url_alvo:
+                links_resultado["jogo"] = href
 
-def extrair_link_download_inteligente(html, url_alvo):
-    if "isoptbr.com" in url_alvo:
-        return extrair_link_isoptbr(html, url_alvo)
-    elif "movgamezone.com" in url_alvo:
-        return extrair_link_movgamezone(html, url_alvo)
-    elif "romsfun.com" in url_alvo:
-        return extrair_link_romsfun(html, url_alvo)
-    else:
-        return extrair_link_movgamezone(html, url_alvo)
+        elif re.search(r'\.(iso|cso|zip|7z|rar)$', href, re.IGNORECASE):
+            if links_resultado["jogo"] == url_alvo:
+                links_resultado["jogo"] = href
 
-# -----------------------------------------------------------------------------
-# MONTAGEM E FILTRAGEM DE DADOS
-# -----------------------------------------------------------------------------
+    return links_resultado
 
 def extrair_screenshots_limpas(html, url_capa):
     todas_imgs = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
@@ -153,10 +124,11 @@ def extrair_screenshots_limpas(html, url_capa):
 def extrair_dados_completos(html, url_alvo):
     id_jogo = extrair_id_jogo(url_alvo)
     
+    # Nome Limpo
     nome_limpo = id_jogo.replace('-', ' ').title()
     m_titulo = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
     if m_titulo:
-        nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|PSP|PTBR|PT-BR|PPSSPP|Download|ROM|ROMs|Gamer|Gratis|-|–|\|).*$', '', m_titulo.group(1)).strip()
+        nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|PSP|PS2|PTBR|PT-BR|PPSSPP|Download|ROM|ROMs|Gamer|Gratis|-|–|\|).*$', '', m_titulo.group(1)).strip()
 
     idioma = identificar_idioma_preciso(html, url_alvo)
     tag_ptbr = " PT-BR" if "Português" in idioma else ""
@@ -165,12 +137,15 @@ def extrair_dados_completos(html, url_alvo):
     formato = identificar_formato(html + " " + url_alvo)
     tamanho = identificar_tamanho(html)
 
+    # Capa
     todas_imgs = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
     capa = todas_imgs[0] if todas_imgs else "https://k-404ppsspp.blogspot.com/favicon.ico"
 
     prints = extrair_screenshots_limpas(html, capa)
+    links = extrair_links_completos(html, url_alvo)
 
-    link_direto = extrair_link_download_inteligente(html, url_alvo)
+    has_savedata = bool(links["savedata"])
+    mod_status = "SaveData 100%" if has_savedata else "Nenhum"
 
     return {
         "id": id_jogo,
@@ -181,7 +156,10 @@ def extrair_dados_completos(html, url_alvo):
         "formato": formato,
         "tamanho": tamanho,
         "idioma": idioma,
-        "link_direto": link_direto,
+        "mod": mod_status,
+        "link_jogo": links["jogo"],
+        "link_savedata": links["savedata"],
+        "link_texturas": links["texturas"],
         "url_original": url_alvo
     }
 
@@ -197,7 +175,9 @@ def salvar_no_firebase(dados):
     endpoint = f"{FIREBASE_BASE_URL.rstrip('/')}/ppsspp/{dados['id']}.json"
     payload = {
         "url_original": dados["url_original"],
-        "link_direto": dados["link_direto"],
+        "link_direto": dados["link_jogo"],
+        "link_savedata": dados["link_savedata"],
+        "link_texturas": dados["link_texturas"],
         "nome": dados["nome_limpo"],
         "tipo": f"PPSSPP {dados['formato']}"
     }
@@ -212,7 +192,8 @@ def enviar_post_para_blogger(dados):
         print("⚠️ Credenciais de e-mail não configuradas no GitHub Secrets.")
         return
 
-    link_redirecionado = f"{URL_WORKER}?id={dados['id']}"
+    link_redirecionado_jogo = f"{URL_WORKER}?id={dados['id']}"
+    link_redirecionado_save = f"{URL_WORKER}?id={dados['id']}&type=save" if dados['link_savedata'] else ""
 
     corpo_linhas = [
         '<!-- FOTO DE CAPA -->',
@@ -227,7 +208,7 @@ def enviar_post_para_blogger(dados):
         f'InfoIdioma={dados["idioma"]}',
         f'InfoTamanho={dados["tamanho"]}',
         f'InfoFormato={dados["formato"]}',
-        'InfoMod=SaveData 100%',
+        f'InfoMod={dados["mod"]}',
         '',
         '<!-- DESCRIÇÃO INICIAL -->',
         f'<p>Baixe agora <b>{dados["nome_limpo"]}</b> para o emulador PPSSPP no Android e PC. Jogo completo em formato {dados["formato"]} ({dados["tamanho"]}) em {dados["idioma"]} com ótimos gráficos e 100% jogável!</p>',
@@ -236,7 +217,7 @@ def enviar_post_para_blogger(dados):
 
     if dados['prints']:
         corpo_linhas.extend([
-            '<!-- GALERIA DE SCREENSHOTS -->',
+            '<!-- GALERIA DE SCREENSHOTS ESTILO PLAY STORE -->',
             '<div class="screenshots-wrapper">',
             '    <div class="screenshots-header-title">📸 Capturas de Tela do Jogo</div>',
             '    <div class="screenshots-box">'
@@ -256,10 +237,26 @@ def enviar_post_para_blogger(dados):
         '<div class="post-dl-box">',
         '    <div class="post-dl-title">📥 Links para Download Direto</div>',
         '',
-        f'    <a href="{link_redirecionado}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-green">',
+        f'    <a href="{link_redirecionado_jogo}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-green">',
         f'        🚀 BAIXAR JOGO {dados["formato"]} ({dados["tamanho"]})',
+        '    </a>'
+    ])
+
+    if dados['link_savedata']:
+        corpo_linhas.extend([
+            '',
+            f'    <a href="{link_redirecionado_save}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-orange">',
+            '        💾 BAIXAR SAVE DATA 100% (ZIP)',
+            '    </a>'
+        ])
+
+    corpo_linhas.extend([
+        '',
+        '    <a href="https://k-404ppsspp.blogspot.com/p/emulador-ppsspp.html" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-purple">',
+        '        📲 BAIXAR EMULADOR PPSSPP GOLD',
         '    </a>',
         '',
+        '    <!-- AVISO CHAMATIVO E DESTACADO -->',
         '    <div class="dl-notice">',
         '        ⚠️ Se abrir algum anúncio ao clicar, basta fechar a guia e clicar novamente no botão!',
         '    </div>',
@@ -269,8 +266,14 @@ def enviar_post_para_blogger(dados):
         '<div class="tutorial-box">',
         '    <div class="tutorial-title">📌 Como Instalar e Jogar:</div>',
         '    <ol class="tutorial-list">',
-        f'        <li>Baixe o jogo em formato <strong>{dados["formato"]}</strong> no botão acima.</li>',
-        '        <li>Instale o emulador <strong>PPSSPP Gold</strong> no seu celular Android ou PC.</li>',
+        f'        <li>Baixe o jogo em formato <strong>{dados["formato"]}</strong>' + (' e o arquivo do <strong>SaveData</strong> nos botões acima.' if dados['link_savedata'] else ' no botão acima.') + '</li>',
+        '        <li>Instale o emulador <strong>PPSSPP Gold</strong> no seu celular Android ou PC.</li>'
+    ])
+
+    if dados['link_savedata']:
+        corpo_linhas.append('        <li>Extraia o SaveData usando o aplicativo <strong>ZArchiver</strong> e mova a pasta extraída para a pasta <code>PSP/SAVEDATA</code> do seu dispositivo.</li>')
+
+    corpo_linhas.extend([
         '        <li>Abra o emulador PPSSPP, navegue até a pasta onde salvou o jogo (geralmente em "Downloads") e clique para jogar!</li>',
         '    </ol>',
         '</div>'
