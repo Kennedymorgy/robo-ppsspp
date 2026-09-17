@@ -65,7 +65,6 @@ def identificar_idioma_preciso(html_completo, url_alvo):
 # -----------------------------------------------------------------------------
 
 def extrair_link_isoptbr(html, url_alvo):
-    # Busca links diretos de hospedagem nos botões do ISOPTBR
     padroes = [
         r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz|mega\.co\.nz)[^"\']+)["\']',
         r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']'
@@ -75,16 +74,14 @@ def extrair_link_isoptbr(html, url_alvo):
         if m:
             return m.group(1)
     
-    # Busca por links de protetores de link comuns
-     links = re.findall(r'href=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE)
-     for link in links:
-         if any(k in link for k in ['download', 'file', 'link', 'drive']) and not any(k in link for k in ['isoptbr.com', 'facebook', 'twitter']):
-             return link
+    links = re.findall(r'href=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE)
+    for link in links:
+        if any(k in link for k in ['download', 'file', 'link', 'drive']) and not any(k in link for k in ['isoptbr.com', 'facebook', 'twitter']):
+            return link
              
     return url_alvo
 
 def extrair_link_movgamezone(html, url_alvo):
-    # Busca por links diretos ou de redirecionamento de download no MovGameZone
     padroes = [
         r'href=["\'](https?://(?:www\.)?(?:mediafire\.com|drive\.google\.com|mega\.nz|modsfire\.com|sharemods\.com|send\.cm|zippyshare\.com)[^"\']+)["\']',
         r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']'
@@ -94,7 +91,6 @@ def extrair_link_movgamezone(html, url_alvo):
         if m:
             return m.group(1)
 
-    # Captura botões com texto de download no post
     links_gerais = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL)
     for link, texto in links_gerais:
         texto_limpo = re.sub(r'<[^>]+>', '', texto).lower()
@@ -105,19 +101,16 @@ def extrair_link_movgamezone(html, url_alvo):
     return url_alvo
 
 def extrair_link_romsfun(html, url_alvo):
-    # RomsFun utiliza uma sub-página de download ou links CDN próprios
     m_sub = re.search(r'href=["\'](https?://romsfun\.com/download/[^"\']+)["\']', html, re.IGNORECASE)
     if m_sub:
         sub_url = m_sub.group(1)
         try:
             res_sub = requests.get(sub_url, headers=obter_headers(), timeout=10)
             if res_sub.status_code == 200:
-                # Procura o link direto do arquivo final na subpágina
                 m_file = re.search(r'href=["\'](https?://[^"\']+\.(?:iso|cso|zip|7z|rar))["\']', res_sub.text, re.IGNORECASE)
                 if m_file:
                     return m_file.group(1)
                 
-                # Procura botões de download na subpágina
                 m_cdn = re.search(r'href=["\'](https?://cdn[^"\']+)["\']', res_sub.text, re.IGNORECASE)
                 if m_cdn:
                     return m_cdn.group(1)
@@ -134,7 +127,6 @@ def extrair_link_download_inteligente(html, url_alvo):
     elif "romsfun.com" in url_alvo:
         return extrair_link_romsfun(html, url_alvo)
     else:
-        # Fallback genérico
         return extrair_link_movgamezone(html, url_alvo)
 
 # -----------------------------------------------------------------------------
@@ -161,7 +153,6 @@ def extrair_screenshots_limpas(html, url_capa):
 def extrair_dados_completos(html, url_alvo):
     id_jogo = extrair_id_jogo(url_alvo)
     
-    # Nome Limpo
     nome_limpo = id_jogo.replace('-', ' ').title()
     m_titulo = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
     if m_titulo:
@@ -174,14 +165,11 @@ def extrair_dados_completos(html, url_alvo):
     formato = identificar_formato(html + " " + url_alvo)
     tamanho = identificar_tamanho(html)
 
-    # Capa
     todas_imgs = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
     capa = todas_imgs[0] if todas_imgs else "https://k-404ppsspp.blogspot.com/favicon.ico"
 
-    # Screenshots
     prints = extrair_screenshots_limpas(html, capa)
 
-    # Link Direto via Filtro Específico por Site
     link_direto = extrair_link_download_inteligente(html, url_alvo)
 
     return {
