@@ -64,11 +64,11 @@ def navegar_e_extrair_com_playwright(url_alvo):
     
     with sync_playwright() as p:
         dispositivo_pixel = p.devices['Pixel 5']
+        # CORREÇÃO: Sobrescreve o user_agent no dicionário do dispositivo para não dar erro de duplicidade
+        dispositivo_pixel['user_agent'] = "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            **dispositivo_pixel,
-            user_agent="Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-        )
+        context = browser.new_context(**dispositivo_pixel)
         page = context.new_page()
 
         def monitorar_requisicoes(request):
