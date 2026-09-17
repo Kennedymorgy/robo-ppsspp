@@ -7,6 +7,7 @@ import requests
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from playwright.sync_api import sync_playwright
 
 # CONFIGURAÇÕES DO BLOG E FIREBASE
 FIREBASE_BASE_URL = "https://meublog-apks-default-rtdb.firebaseio.com"
@@ -16,14 +17,6 @@ URL_WORKER = "https://orange-star-d066.claudiokennedymorgy.workers.dev"
 GMAIL_USER = os.environ.get("GMAIL_USER")        
 GMAIL_PASS = os.environ.get("GMAIL_PASS")        
 BLOGGER_EMAIL = os.environ.get("BLOGGER_EMAIL")  
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/121.0.0.0 Safari/537.36"
-]
-
-def obter_headers():
-    return {"User-Agent": random.choice(USER_AGENTS)}
 
 def extrair_id_jogo(url_origem):
     url_limpa = url_origem.split('?')[0].split('#')[0].rstrip('/')
@@ -43,7 +36,8 @@ def identificar_formato(texto):
     return "ISO"
 
 def identificar_tamanho(texto):
-    m = re.search(r'(\d+(?:\.\d+)?\s*(?:GB|MB))', texto, re.IGNORECASE)
+    # Captura variações de GB, MB, KB (maiúsculas e minúsculas)
+    m = re.search(r'(\d+(?:\.\d+)?\s*(?:GB|MB|KB))', texto, re.IGNORECASE)
     return m.group(1).upper() if m else "1.1 GB"
 
 def identificar_idioma_preciso(html_completo, url_alvo):
@@ -61,70 +55,69 @@ def identificar_idioma_preciso(html_completo, url_alvo):
     return "Espanhol / Inglês"
 
 # -----------------------------------------------------------------------------
-# RASPAGEM DE LINKS AVANÇADA (JOGO + SAVE DATA + TEXTURAS)
+# NAVEGADOR SIMULADO (ANDROID 13) COM PLAYWRIGHT
 # -----------------------------------------------------------------------------
 
-def extrair_links_completos(html, url_alvo):
-    links_resultado = {
-        "jogo": "",
-        "savedata": "",
-        "texturas": ""
-    }
+def navegar_e_extrair_com_playwright(url_alvo):
+    links_encontrados = []
+    html_content = ""
+    
+    with sync_playwright() as p:
+        dispositivo_pixel = p.devices['Pixel 5']
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            **dispositivo_pixel,
+            user_agent="Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        )
+        page = context.new_page()
 
-    # Busca todas as tags de link com atributos
-    tags_a = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL)
+        def monitorar_requisicoes(request):
+            url = request.url
+            if any(k in url.lower() for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive']) or re.search(r'\.(iso|cso|zip|7z|rar)$', url, re.IGNORECASE):
+                if url not in links_encontrados:
+                    links_encontrados.append(url)
 
-    for href, texto in tags_a:
-        texto_limpo = re.sub(r'<[^>]+>', '', texto).lower()
-        href_lower = href.lower()
-        
-        # Ignora redes sociais, navegação e anúncios conhecidos
-        if any(domain in href_lower for domain in ['facebook.com', 'twitter.com', 'instagram.com', 'whatsapp.com', 'telegram.me', 'monetag', 'doubleclick']):
-            continue
+        page.on("request", monitorar_requisicoes)
 
-        # Detecta SaveData
-        if any(k in texto_limpo or k in href_lower for k in ['save', 'savedata', 'data 100%']):
-            if not links_resultado["savedata"]:
-                links_resultado["savedata"] = href
-                continue
+        try:
+            page.goto(url_alvo, wait_until="domcontentloaded", timeout=30000)
+            time.sleep(3)
 
-        # Detecta Texturas
-        if any(k in texto_limpo or k in href_lower for k in ['texture', 'textura', 'texturas']):
-            if not links_resultado["texturas"]:
-                links_resultado["texturas"] = href
-                continue
+            seletor_botoes = 'a:has-text("Download"), a:has-text("Baixar"), button:has-text("Download"), button:has-text("Baixar"), .btn-download, #download-btn'
+            botoes = page.query_selector_all(seletor_botoes)
+            
+            for btn in botoes[:3]:
+                try:
+                    btn.click(timeout=3000)
+                    time.sleep(2)
+                except Exception:
+                    pass
 
-        # Detecta Link do Jogo Principal (Servidores de Download e Extensões)
-        if any(k in href_lower for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive', 'upload']):
-            if not links_resultado["jogo"]:
-                links_resultado["jogo"] = href
+            html_content = page.content()
 
-        elif re.search(r'\.(iso|cso|zip|7z|rar)$', href_lower):
-            if not links_resultado["jogo"]:
-                links_resultado["jogo"] = href
+            hrefs = page.eval_on_selector_all('a[href]', 'elements => elements.map(e => e.href)')
+            for h in hrefs:
+                if any(k in h.lower() for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive']) or re.search(r'\.(iso|cso|zip|7z|rar)$', h, re.IGNORECASE):
+                    if h not in links_encontrados:
+                        links_encontrados.append(h)
 
-    # Fallback: Se não achou link direto de servidor, pega o link do botão de download da página
-    if not links_resultado["jogo"]:
-        for href, texto in tags_a:
-            texto_limpo = re.sub(r'<[^>]+>', '', texto).lower()
-            if any(k in texto_limpo for k in ['download', 'baixar', 'servidor', 'opção', 'link']):
-                if not any(domain in href for domain in ['facebook.com', 'twitter.com', 'instagram.com', 'whatsapp.com', 'telegram.me']):
-                    links_resultado["jogo"] = href
-                    break
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar página via Playwright: {e}")
+        finally:
+            browser.close()
 
-    # Se ainda assim não achar nada, usa a própria URL alvo como segurança
-    if not links_resultado["jogo"]:
-        links_resultado["jogo"] = url_alvo
-
-    return links_resultado
+    return html_content, links_encontrados
 
 def extrair_screenshots_limpas(html, url_capa):
     todas_imgs = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
     prints_validas = []
 
+    # Palavras-chave de imagens a ignorar (banners, logos, ícones e widgets)
+    palavras_ignorar = ['logo', 'icon', 'banner', 'avatar', 'button', 'sidebar', 'related', 'favicon', 'widgets', 'ads', 'ad-', 'header', 'footer']
+
     for img in todas_imgs:
         img_lower = img.lower()
-        if img == url_capa or any(k in img_lower for k in ['logo', 'icon', 'banner', 'avatar', 'button', 'sidebar', 'related', 'favicon', 'widgets', 'ads']):
+        if img == url_capa or any(k in img_lower for k in palavras_ignorar):
             continue
         
         if img not in prints_validas:
@@ -135,10 +128,11 @@ def extrair_screenshots_limpas(html, url_capa):
 
     return prints_validas
 
-def extrair_dados_completos(html, url_alvo):
+def extrair_dados_completos(url_alvo):
+    html, links_capturados = navegar_e_extrair_com_playwright(url_alvo)
+    
     id_jogo = extrair_id_jogo(url_alvo)
     
-    # Nome Limpo
     nome_limpo = id_jogo.replace('-', ' ').title()
     m_titulo = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
     if m_titulo:
@@ -151,15 +145,23 @@ def extrair_dados_completos(html, url_alvo):
     formato = identificar_formato(html + " " + url_alvo)
     tamanho = identificar_tamanho(html)
 
-    # Capa
     todas_imgs = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
     capa = todas_imgs[0] if todas_imgs else "https://k-404ppsspp.blogspot.com/favicon.ico"
 
     prints = extrair_screenshots_limpas(html, capa)
-    links = extrair_links_completos(html, url_alvo)
 
-    has_savedata = bool(links["savedata"])
-    mod_status = "SaveData 100%" if has_savedata else "Nenhum"
+    link_jogo = links_capturados[0] if links_capturados else url_alvo
+    link_savedata = ""
+    link_texturas = ""
+
+    for l in links_capturados:
+        l_lower = l.lower()
+        if any(k in l_lower for k in ['save', 'savedata', 'data']):
+            link_savedata = l
+        elif any(k in l_lower for k in ['texture', 'textura']):
+            link_texturas = l
+
+    mod_status = "SaveData 100%" if link_savedata else "Nenhum"
 
     return {
         "id": id_jogo,
@@ -171,9 +173,9 @@ def extrair_dados_completos(html, url_alvo):
         "tamanho": tamanho,
         "idioma": idioma,
         "mod": mod_status,
-        "link_jogo": links["jogo"],
-        "link_savedata": links["savedata"],
-        "link_texturas": links["texturas"],
+        "link_jogo": link_jogo,
+        "link_savedata": link_savedata,
+        "link_texturas": link_texturas,
         "url_original": url_alvo
     }
 
@@ -208,8 +210,8 @@ def enviar_post_para_blogger(dados):
 
     link_redirecionado_jogo = f"{URL_WORKER}?id={dados['id']}"
     link_redirecionado_save = f"{URL_WORKER}?id={dados['id']}&type=save" if dados['link_savedata'] else ""
+    link_redirecionado_tex = f"{URL_WORKER}?id={dados['id']}&type=texture" if dados['link_texturas'] else ""
 
-    # ESTRUTURA HTML COM CARDS SEPARADOS PARA NÃO EMBALANÇAR/MISTURAR DADOS
     corpo_linhas = [
         '<!-- FOTO DE CAPA -->',
         '<div class="post-cover" style="text-align: center; margin-bottom: 20px;">',
@@ -219,7 +221,7 @@ def enviar_post_para_blogger(dados):
         f'BlackPostName={dados["nome_limpo"]}',
         '<!--more-->',
         '',
-        '<!-- GRID DE INFORMAÇÕES DO JOGO (CADA ITEM EM SEU CARD) -->',
+        '<!-- GRID DE INFORMAÇÕES DO JOGO -->',
         '<div class="info-grid">',
         '    <div class="info-card">',
         '        <span class="info-label">📱 NOME</span>',
@@ -252,6 +254,7 @@ def enviar_post_para_blogger(dados):
         ''
     ]
 
+    # GALERIA CONDICIONAL DE SCREENSHOTS (SÓ CRIA SE HOUVER IMAGENS VÁLIDAS)
     if dados['prints']:
         corpo_linhas.extend([
             '<!-- GALERIA DE SCREENSHOTS ESTILO PLAY STORE -->',
@@ -269,31 +272,37 @@ def enviar_post_para_blogger(dados):
             ''
         ])
 
+    # BOTÕES DINÂMICOS DE DOWNLOAD
     corpo_linhas.extend([
         '<!-- ÁREA DE DOWNLOADS -->',
         '<div class="post-dl-box">',
         '    <div class="post-dl-title">📥 Links para Download Direto</div>',
-        '',
-        f'    <a href="{link_redirecionado_jogo}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-green">',
-        f'        🚀 BAIXAR JOGO {dados["formato"]} ({dados["tamanho"]})',
-        '    </a>'
+        ''
     ])
 
+    if dados['link_jogo']:
+        corpo_linhas.append(
+            f'    <a href="{link_redirecionado_jogo}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-green">'
+            f'🚀 BAIXAR JOGO {dados["formato"]} ({dados["tamanho"]})</a>'
+        )
+
     if dados['link_savedata']:
-        corpo_linhas.extend([
-            '',
-            f'    <a href="{link_redirecionado_save}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-orange">',
-            '        💾 BAIXAR SAVE DATA 100% (ZIP)',
-            '    </a>'
-        ])
+        corpo_linhas.append(
+            f'    <a href="{link_redirecionado_save}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-orange">'
+            f'💾 BAIXAR SAVE DATA 100% (ZIP)</a>'
+        )
+
+    if dados['link_texturas']:
+        corpo_linhas.append(
+            f'    <a href="{link_redirecionado_tex}" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-blue">'
+            f'🎨 BAIXAR TEXTURAS HD (ZIP)</a>'
+        )
 
     corpo_linhas.extend([
-        '',
         '    <a href="https://k-404ppsspp.blogspot.com/p/emulador-ppsspp.html" target="_blank" rel="nofollow noopener" class="btn-dl btn-dl-purple">',
         '        📲 BAIXAR EMULADOR PPSSPP GOLD',
         '    </a>',
         '',
-        '    <!-- AVISO CHAMATIVO E DESTACADO -->',
         '    <div class="dl-notice">',
         '        ⚠️ Se abrir algum anúncio ao clicar, basta fechar a guia e clicar novamente no botão!',
         '    </div>',
@@ -303,15 +312,15 @@ def enviar_post_para_blogger(dados):
         '<div class="tutorial-box">',
         '    <div class="tutorial-title">📌 Como Instalar e Jogar:</div>',
         '    <ol class="tutorial-list">',
-        f'        <li>Baixe o jogo em formato <strong>{dados["formato"]}</strong>' + (' e o arquivo do <strong>SaveData</strong> nos botões acima.' if dados['link_savedata'] else ' no botão acima.') + '</li>',
+        f'        <li>Baixe o jogo em formato <strong>{dados["formato"]}</strong>' + (' e o arquivo de dados adicional nos botões acima.' if (dados['link_savedata'] or dados['link_texturas']) else ' no botão acima.') + '</li>',
         '        <li>Instale o emulador <strong>PPSSPP Gold</strong> no seu celular Android ou PC.</li>'
     ])
 
     if dados['link_savedata']:
-        corpo_linhas.append('        <li>Extraia o SaveData usando o aplicativo <strong>ZArchiver</strong> e mova a pasta extraída para a pasta <code>PSP/SAVEDATA</code> do seu dispositivo.</li>')
+        corpo_linhas.append('        <li>Extraia o SaveData usando o aplicativo <strong>ZArchiver</strong> e mova a pasta extraída para a pasta <code>PSP/SAVEDATA</code>.</li>')
 
     corpo_linhas.extend([
-        '        <li>Abra o emulador PPSSPP, navegue até a pasta onde salvou o jogo (geralmente em "Downloads") e clique para jogar!</li>',
+        '        <li>Abra o emulador PPSSPP, navegue até a pasta onde salvou o arquivo e inicie a partida!</li>',
         '    </ol>',
         '</div>'
     ])
@@ -337,17 +346,15 @@ def enviar_post_para_blogger(dados):
 def processar_url(url_alvo):
     time.sleep(random.uniform(2, 4))
     try:
-        res = requests.get(url_alvo, headers=obter_headers(), timeout=15)
-        if res.status_code == 200:
-            dados = extrair_dados_completos(res.text, url_alvo)
-            ja_cadastrado = jogo_ja_existe_no_firebase(dados['id'])
-            
-            salvar_no_firebase(dados)
-            
-            if not ja_cadastrado:
-                enviar_post_para_blogger(dados)
-            else:
-                print(f"ℹ️ Jogo '{dados['nome_limpo']}' já cadastrado. Banco sincronizado sem post duplicado.")
+        dados = extrair_dados_completos(url_alvo)
+        ja_cadastrado = jogo_ja_existe_no_firebase(dados['id'])
+        
+        salvar_no_firebase(dados)
+        
+        if not ja_cadastrado:
+            enviar_post_para_blogger(dados)
+        else:
+            print(f"ℹ️ Jogo '{dados['nome_limpo']}' já cadastrado. Links sincronizados no Firebase.")
     except Exception as e:
         print(f"❌ Falha ao processar a URL {url_alvo}: {e}")
 
