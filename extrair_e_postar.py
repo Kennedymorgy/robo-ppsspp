@@ -28,7 +28,7 @@ def extrair_nome_limpo(page, id_jogo):
     return nome_limpo
 
 def extrair_link_externo_de_pagina_interna(page, url_interna):
-    """Navega na página secundária para buscar o servidor real (Modsfire, Mediafire, Mega, etc)."""
+    """Navega na página secundária para buscar o servidor real."""
     try:
         print(f"🔄 Entrando em página secundária: {url_interna}")
         page.goto(url_interna, wait_until="domcontentloaded", timeout=25000)
@@ -41,6 +41,38 @@ def extrair_link_externo_de_pagina_interna(page, url_interna):
     except Exception as e:
         print(f"⚠️ Erro na página secundária: {e}")
     return url_interna
+
+def extrair_romsgames_com_click(page, url_alvo):
+    """Clica no botão Save Game e captura a URL de download gerada após os 7s."""
+    link_capturado = []
+
+    def escutar_requisicoes(request):
+        url = request.url
+        if "static.romsgames.net" in url or "output.bin" in url or ".zip" in url:
+            link_capturado.append(url)
+
+    page.on("request", escutar_requisicoes)
+
+    try:
+        print(f"\n🌐 [ROMSGAMES] Acessando: {url_alvo}")
+        page.goto(url_alvo, wait_until="domcontentloaded", timeout=35000)
+        page.wait_for_timeout(2000)
+
+        # Procura e clica no botão Save Game
+        botao_save = page.query_selector("button:has-text('Save Game'), a:has-text('Save Game'), .btn-save")
+        if botao_save:
+            print("⏳ Botão Save Game encontrado. Clicando e aguardando a contagem de 7s...")
+            botao_save.click()
+            page.wait_for_timeout(9000)  # Aguarda o timer de 7 segundos expirar
+
+        if link_capturado:
+            print(f"🎯 Link direto extraído com sucesso: {link_capturado[0]}")
+            return link_capturado[0]
+
+    except Exception as e:
+        print(f"⚠️ Erro ao processar Romsgames: {e}")
+
+    return url_alvo
 
 def extrair_links_com_contexto(page):
     dados = {"link_direto": "", "link_savedata": ""}
@@ -76,15 +108,16 @@ def processar_pagina(url_alvo):
     link_direto, link_savedata = "", ""
     nome_jogo = id_jogo.replace('-', ' ').title()
 
-    if "romsgames.net" in url_alvo:
-        link_direto = url_alvo.rstrip('/') + '/'
-    else:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-            context = browser.new_context(user_agent="Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
-            page = context.new_page()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        context = browser.new_context(user_agent="Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+        page = context.new_page()
 
-            try:
+        try:
+            if "romsgames.net" in url_alvo:
+                link_direto = extrair_romsgames_com_click(page, url_alvo)
+                nome_jogo = extrair_nome_limpo(page, id_jogo)
+            else:
                 print(f"\n🌐 Processando URL: {url_alvo}")
                 page.goto(url_alvo, wait_until="domcontentloaded", timeout=35000)
                 page.wait_for_timeout(3000)
@@ -98,10 +131,10 @@ def processar_pagina(url_alvo):
                 if link_savedata and ("movgamezone.com" in link_savedata or "isoptbr.com" in link_savedata):
                     link_savedata = extrair_link_externo_de_pagina_interna(page, link_savedata)
 
-            except Exception as e:
-                print(f"⚠️ Erro ao navegar: {e}")
-            finally:
-                browser.close()
+        except Exception as e:
+            print(f"⚠️ Erro ao navegar: {e}")
+        finally:
+            browser.close()
 
     if not link_direto:
         link_direto = url_alvo
