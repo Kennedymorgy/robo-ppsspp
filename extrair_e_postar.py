@@ -1,7 +1,6 @@
 import sys
 import os
 import re
-import time
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -29,9 +28,9 @@ def extrair_nome_limpo(page, id_jogo):
     return nome_limpo
 
 def extrair_link_externo_de_pagina_interna(page, url_interna):
-    """Aprofunda em páginas internas do blog para encontrar o link do servidor real (Mediafire, Mega, Modsfire, etc)."""
+    """Navega na página secundária para buscar o servidor real (Modsfire, Mediafire, Mega, etc)."""
     try:
-        print(f"🔄 Entrando em página secundária para buscar servidor real: {url_interna}")
+        print(f"🔄 Entrando em página secundária: {url_interna}")
         page.goto(url_interna, wait_until="domcontentloaded", timeout=25000)
         page.wait_for_timeout(2000)
         
@@ -40,18 +39,11 @@ def extrair_link_externo_de_pagina_interna(page, url_interna):
             if any(dom in h for dom in DOMINIOS_SERVIDORES) or re.search(r'\.(zip|7z|rar|iso|cso)(\?.*)?$', h, re.IGNORECASE):
                 return h
     except Exception as e:
-        print(f"⚠️ Não foi possível extrair da página secundária: {e}")
+        print(f"⚠️ Erro na página secundária: {e}")
     return url_interna
 
-def extrair_romsgames(url_alvo):
-    """Redireciona para o gerador interno do Romsgames, evitando erro de sessão/hotlink."""
-    url_limpa = url_alvo.rstrip('/')
-    if not url_limpa.endswith('/download'):
-        return f"{url_limpa}/download/"
-    return url_limpa
-
 def extrair_links_com_contexto(page):
-    dados = {"link_direto": "", "link_savedata": "", "link_texturas": ""}
+    dados = {"link_direto": "", "link_savedata": ""}
     
     elementos = page.eval_on_selector_all("a[href]", """
         elements => elements.map(e => ({
@@ -71,9 +63,6 @@ def extrair_links_com_contexto(page):
         if ("savedata" in contexto or "save data" in contexto or "save-data" in contexto) and not dados["link_savedata"]:
             dados["link_savedata"] = href
 
-        elif ("textura" in contexto or "texture" in contexto) and not dados["link_texturas"]:
-            dados["link_texturas"] = href
-
         elif not dados["link_direto"]:
             is_arquivo = re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', href, re.IGNORECASE)
             is_servidor = any(dom in href for dom in DOMINIOS_SERVIDORES)
@@ -84,11 +73,11 @@ def extrair_links_com_contexto(page):
 
 def processar_pagina(url_alvo):
     id_jogo = extrair_id_jogo(url_alvo)
-    link_direto, link_savedata, link_texturas = "", "", ""
+    link_direto, link_savedata = "", ""
     nome_jogo = id_jogo.replace('-', ' ').title()
 
     if "romsgames.net" in url_alvo:
-        link_direto = extrair_romsgames(url_alvo)
+        link_direto = url_alvo.rstrip('/') + '/'
     else:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
@@ -105,14 +94,9 @@ def processar_pagina(url_alvo):
 
                 link_direto = links["link_direto"]
                 link_savedata = links["link_savedata"]
-                link_texturas = links["link_texturas"]
 
-                # Resolve Savedata/Texturas se apontarem para postagem interna
                 if link_savedata and ("movgamezone.com" in link_savedata or "isoptbr.com" in link_savedata):
                     link_savedata = extrair_link_externo_de_pagina_interna(page, link_savedata)
-
-                if link_texturas and ("movgamezone.com" in link_texturas or "isoptbr.com" in link_texturas):
-                    link_texturas = extrair_link_externo_de_pagina_interna(page, link_texturas)
 
             except Exception as e:
                 print(f"⚠️ Erro ao navegar: {e}")
@@ -122,9 +106,9 @@ def processar_pagina(url_alvo):
     if not link_direto:
         link_direto = url_alvo
 
-    salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata, link_texturas)
+    salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata)
 
-def salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata, link_texturas):
+def salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata):
     endpoint = f"{FIREBASE_BASE_URL.rstrip('/')}/ppsspp/{id_jogo}.json"
     
     dados_atuais = {}
@@ -139,15 +123,13 @@ def salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata,
         "url_original": url_alvo,
         "link_direto": link_direto,
         "link_savedata": link_savedata,
-        "link_texturas": link_texturas,
         "nome": nome_jogo,
         "tipo": "PPSSPP ISO"
     }
 
     se_mudou = (
         dados_atuais.get("link_direto") != link_direto or
-        dados_atuais.get("link_savedata") != link_savedata or
-        dados_atuais.get("link_texturas") != link_texturas
+        dados_atuais.get("link_savedata") != link_savedata
     )
 
     try:
@@ -160,11 +142,8 @@ def salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata,
             print(f"🔗 Cloudflare ISO: {CLOUDFLARE_WORKER_URL}/?id={id_jogo}")
             if link_savedata:
                 print(f"💾 Cloudflare Savedata: {CLOUDFLARE_WORKER_URL}/?id={id_jogo}&type=savedata")
-            if link_texturas:
-                print(f"🎨 Cloudflare Texturas: {CLOUDFLARE_WORKER_URL}/?id={id_jogo}&type=texturas")
             print(f"📦 ISO Real: {link_direto}")
             if link_savedata: print(f"💾 Savedata Real: {link_savedata}")
-            if link_texturas: print(f"🎨 Texturas Real: {link_texturas}")
             print("="*60 + "\n")
     except Exception as e:
         print(f"❌ Erro ao salvar no Firebase: {e}")
