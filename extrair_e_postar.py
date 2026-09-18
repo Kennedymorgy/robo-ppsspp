@@ -2,22 +2,35 @@ import sys
 import os
 import re
 import time
-import random
 import requests
 from playwright.sync_api import sync_playwright
 
-# CONFIGURAÇÕES DE RECURSOS
 FIREBASE_BASE_URL = "https://meublog-apks-default-rtdb.firebaseio.com"
 CLOUDFLARE_WORKER_URL = "https://orange-star-d066.claudiokennedymorgy.workers.dev"
 
 def extrair_id_jogo(url_origem):
+    """Gera o ID único limpo para a chave no Firebase."""
     url_limpa = url_origem.split('?')[0].split('#')[0].rstrip('/')
     partes = [p for p in url_limpa.split('/') if p and p not in ['download', 'file', 'playstation-portable-rom'] and not p.isdigit()]
     id_jogo = partes[-1] if partes else "jogo"
     id_jogo = re.sub(r'(\.html|\.iso|\.cso|\.zip|\.7z|-psp-ptbr|-ppsspp|-psp|-ps2-ptbr|-ps2)$', '', id_jogo, flags=re.IGNORECASE)
     return re.sub(r'[^a-zA-Z0-9_-]', '', id_jogo).lower()
 
+def extrair_nome_limpo(page, id_jogo):
+    """Garante que o campo 'nome' seja o título do jogo e nunca uma URL."""
+    titulo_raw = page.title() or ""
+    
+    # Limpa sufixos comuns de blogs e sites de roms
+    nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|7Z|RAR|CHD|PSP|PS2|PTBR|PT-BR|PPSSPP|Download|ROM|ROMs|Gamer|Gratis|–|-|\|).*$', '', titulo_raw).strip()
+    
+    # Se falhar ou vier como URL, gera um nome formatado a partir do ID
+    if not nome_limpo or nome_limpo.startswith("http://") or nome_limpo.startswith("https://") or len(nome_limpo) < 3:
+        nome_limpo = id_jogo.replace('-', ' ').title()
+        
+    return nome_limpo
+
 def identificar_formato(texto):
+    """Mapeia a extensão do jogo."""
     texto_upper = texto.upper()
     if "CSO" in texto_upper:
         return "CSO"
@@ -29,182 +42,183 @@ def identificar_formato(texto):
         return "CHD"
     return "ISO"
 
-# -----------------------------------------------------------------------------
-# EXTRAÇÃO DE LINK REAL DEDICADA (ROMSGAMES.NET VIA REQUISIÇÃO DIRETA)
-# -----------------------------------------------------------------------------
+def extrair_romsgames(page, url_alvo):
+    """Tratamento exclusivo para Romsgames.net."""
+    print(f"🎯 [ROMSGAMES] Processando: {url_alvo}")
+    link_capturado = []
 
-def extrair_romsgames_direto(url_alvo):
-    print(f"🚀 [ROMSGAMES] Extraindo arquivo direto via HTTP para: {url_alvo}")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-        "Referer": url_alvo
+    def escutar_requisicao(req):
+        url = req.url
+        if re.search(r'\.(iso|cso|zip|7z|rar)(\?.*)?$', url, re.IGNORECASE) or "get-rom" in url:
+            if url not in link_capturado:
+                link_capturado.append(url)
+
+    page.on("request", escutar_requisicao)
+    page.goto(url_alvo, wait_until="domcontentloaded", timeout=40000)
+    page.wait_for_timeout(3000)
+
+    for b in page.locator("a, button").all():
+        try:
+            txt = (b.inner_text() or "").lower()
+            href = b.get_attribute("href") or ""
+            if "save game" in txt or "download" in txt or "/download/" in href:
+                b.click(force=True)
+                print("⏳ Botão acionado. Aguardando gerador...")
+                break
+        except:
+            continue
+
+    page.wait_for_timeout(9000)
+
+    if not link_capturado:
+        hrefs = page.eval_on_selector_all("a[href]", "elements => elements.map(e => e.href)")
+        for h in hrefs:
+            if re.search(r'\.(iso|cso|zip|7z|rar)(\?.*)?$', h, re.IGNORECASE) or "get-rom" in h:
+                link_capturado.append(h)
+                break
+
+    return link_capturado[0] if link_capturado else url_alvo
+
+def extrair_links_com_contexto(page):
+    """Extrai ISO, Savedata e Texturas filtrando por texto e servidores comuns."""
+    dados = {
+        "link_direto": "",
+        "link_savedata": "",
+        "link_texturas": ""
     }
 
-    session = requests.Session()
-    session.headers.update(headers)
+    dominios_validos = [
+        "mediafire.com", "mega.nz", "drive.google.com", "archive.org", 
+        "workupload.com", "terabox.com", "gofile.io", "modsfire.com", 
+        "encurtanet.com", "uploadhaven.com"
+    ]
 
-    try:
-        # 1. Acessa a página principal
-        r1 = session.get(url_alvo, timeout=20)
-        
-        # Procura por links contendo /download/
-        links_download = re.findall(r'href=["\']([^"\']*/download/[^"\']*)["\']', r1.text, re.IGNORECASE)
-        
-        download_url = None
-        if links_download:
-            download_url = links_download[0]
-            if not download_url.startswith('http'):
-                download_url = f"https://www.romsgames.net{download_url}"
+    elementos = page.eval_on_selector_all("a[href]", """
+        elements => elements.map(e => ({
+            href: e.href,
+            text: (e.innerText || '').toLowerCase(),
+            parentText: (e.parentElement ? e.parentElement.innerText : '').toLowerCase()
+        }))
+    """)
 
-        if download_url:
-            print(f"⏳ Acessando página do gerador de download: {download_url}")
-            time.sleep(5)
-            
-            r2 = session.get(download_url, timeout=20)
-            
-            # Busca links de arquivos diretos (.zip, .iso, .7z, .rar)
-            arquivos = re.findall(r'href=["\']([^"\']+\.(?:zip|iso|7z|rar|cso|chd)(?:\?[^"\']*)?)["\']', r2.text, re.IGNORECASE)
-            if arquivos:
-                link_final = arquivos[0]
-                if not link_final.startswith('http'):
-                    link_final = f"https://www.romsgames.net{link_final}"
-                print(f"🎯 LINK REAL DO ARQUIVO ENCONTRADO: {link_final}")
-                return link_final, r1.text
+    for item in elementos:
+        href = item["href"]
+        contexto = f"{item['text']} {item['parentText']}"
 
-    except Exception as e:
-        print(f"⚠️ Erro ao extrair Romsgames via HTTP: {e}")
+        # Ignora redes sociais e links de navegação interna
+        if any(ignorar in href for ignorar in ["facebook.com", "twitter.com", "instagram.com", "whatsapp.com", "telegram.org", "blogspot.com", "/category/"]):
+            continue
 
-    return None, ""
+        # Savedata
+        if "savedata" in contexto or "save data" in contexto or "save-data" in contexto:
+            if not dados["link_savedata"]:
+                dados["link_savedata"] = href
 
-# -----------------------------------------------------------------------------
-# EXTRAÇÃO FALLBACK COM PLAYWRIGHT (OUTROS SITES)
-# -----------------------------------------------------------------------------
+        # Texturas
+        elif "textura" in contexto or "texture" in contexto:
+            if not dados["link_texturas"]:
+                dados["link_texturas"] = href
 
-def navegar_e_extrair_com_playwright(url_alvo):
-    links_encontrados = []
+        # Jogo Principal (ISO / CSO / Servidor de Arquivo)
+        else:
+            is_arquivo = re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', href, re.IGNORECASE)
+            is_servidor = any(dom in href for dom in dominios_validos)
+
+            if (is_arquivo or is_servidor) and not dados["link_direto"]:
+                dados["link_direto"] = href
+
+    return dados
+
+def processar_pagina(url_alvo):
+    id_jogo = extrair_id_jogo(url_alvo)
+    link_direto = ""
+    link_savedata = ""
+    link_texturas = ""
     html_content = ""
 
     with sync_playwright() as p:
-        dispositivo = p.devices['Pixel 5']
-        dispositivo['user_agent'] = "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(**dispositivo)
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        context = browser.new_context(user_agent="Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
         page = context.new_page()
 
         try:
-            print(f"🌐 Acessando via Playwright: {url_alvo}")
-            page.goto(url_alvo, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(3)
+            print(f"\n🌐 Processando URL: {url_alvo}")
 
-            html_content = page.content()
-            hrefs = page.eval_on_selector_all('a[href]', 'elements => elements.map(e => e.href)')
-
-            for h in hrefs:
-                if re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', h, re.IGNORECASE):
-                    if h not in links_encontrados:
-                        links_encontrados.append(h)
+            if "romsgames.net" in url_alvo:
+                link_direto = extrair_romsgames(page, url_alvo)
+                html_content = page.content()
+                nome_jogo = extrair_nome_limpo(page, id_jogo)
+            else:
+                page.goto(url_alvo, wait_until="domcontentloaded", timeout=35000)
+                page.wait_for_timeout(3000)
+                html_content = page.content()
+                
+                nome_jogo = extrair_nome_limpo(page, id_jogo)
+                links = extrair_links_com_contexto(page)
+                
+                link_direto = links["link_direto"]
+                link_savedata = links["link_savedata"]
+                link_texturas = links["link_texturas"]
 
         except Exception as e:
-            print(f"⚠️ Erro no Playwright: {e}")
+            print(f"⚠️ Erro ao navegar com Playwright: {e}")
+            nome_jogo = id_jogo.replace('-', ' ').title()
         finally:
             browser.close()
 
-    return html_content, links_encontrados
+    if not link_direto:
+        link_direto = url_alvo
 
-def obter_dados_atuais_firebase(id_jogo):
+    formato = identificar_formato(html_content + " " + link_direto)
+
+    salvar_no_firebase(
+        id_jogo=id_jogo,
+        nome_jogo=nome_jogo,
+        formato=formato,
+        url_alvo=url_alvo,
+        link_direto=link_direto,
+        link_savedata=link_savedata,
+        link_texturas=link_texturas
+    )
+
+def salvar_no_firebase(id_jogo, nome_jogo, formato, url_alvo, link_direto, link_savedata, link_texturas):
     endpoint = f"{FIREBASE_BASE_URL.rstrip('/')}/ppsspp/{id_jogo}.json"
-    try:
-        res = requests.get(endpoint, timeout=10)
-        if res.status_code == 200 and res.json() is not None:
-            return res.json()
-    except Exception as e:
-        print(f"⚠️ Erro ao consultar Firebase: {e}")
-    return None
 
-def salvar_ou_atualizar_firebase(id_jogo, nome_jogo, formato, url_alvo, link_jogo, link_savedata="", link_texturas=""):
-    endpoint = f"{FIREBASE_BASE_URL.rstrip('/')}/ppsspp/{id_jogo}.json"
-
-    dados_existentes = obter_dados_atuais_firebase(id_jogo)
-
-    novos_dados = {
+    payload = {
         "url_original": url_alvo,
-        "link_direto": link_jogo,
+        "link_direto": link_direto,
         "link_savedata": link_savedata,
         "link_texturas": link_texturas,
         "nome": nome_jogo,
         "tipo": f"PPSSPP {formato}"
     }
 
-    if dados_existentes:
-        mudou = (
-            dados_existentes.get("link_direto") != link_jogo or
-            dados_existentes.get("link_savedata") != link_savedata or
-            dados_existentes.get("link_texturas") != link_texturas
-        )
-
-        if not mudou:
-            print(f"⚡ [SEM ALTERAÇÕES] Os links do jogo '{id_jogo}' estão 100% atualizados no Firebase.")
-            return
-
-        print(f"🔄 [LINK ATUALIZADO DETECTADO] Atualizando links do jogo '{id_jogo}' no Firebase...")
-
     try:
-        res = requests.patch(endpoint, json=novos_dados, timeout=10)
+        res = requests.patch(endpoint, json=payload, timeout=10)
         if res.status_code == 200:
-            print(f"✅ Firebase sincronizado com sucesso para: {id_jogo}")
+            print(f"✅ SALVO NO FIREBASE: /ppsspp/{id_jogo}")
+            print("="*60)
+            print(f"🎮 Nome: {nome_jogo}")
+            print(f"🔗 Link Cloudflare para o Blogger: {CLOUDFLARE_WORKER_URL}/?id={id_jogo}")
+            print(f"📦 ISO/Jogo: {link_direto}")
+            if link_savedata: print(f"💾 Savedata: {link_savedata}")
+            if link_texturas: print(f"🎨 Texturas: {link_texturas}")
+            print("="*60 + "\n")
         else:
             print(f"❌ Erro ao salvar no Firebase. Status: {res.status_code}")
     except Exception as e:
-        print(f"❌ Erro de requisição no Firebase: {e}")
-
-def processar_url(url_alvo):
-    id_jogo = extrair_id_jogo(url_alvo)
-    link_real = None
-    html = ""
-
-    if "romsgames.net" in url_alvo:
-        link_real, html = extrair_romsgames_direto(url_alvo)
-
-    if not link_real:
-        html, links_capturados = navegar_e_extrair_com_playwright(url_alvo)
-        if links_capturados:
-            link_real = links_capturados[0]
-
-    if not link_real:
-        print("⚠️ Não foi possível capturar o arquivo final automaticamente. Salvando URL de origem.")
-        link_real = url_alvo
-
-    nome_limpo = id_jogo.replace('-', ' ').title()
-    m_titulo = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
-    if m_titulo:
-        nome_limpo = re.sub(r'(?i)\s*(?:ISO|CSO|ZIP|CHD|PSP|PS2|PTBR|PT-BR|PPSSPP|Download|ROM|ROMs|Gamer|Gratis|-|–|\|).*$', '', m_titulo.group(1)).strip()
-
-    formato = identificar_formato(html + " " + link_real)
-
-    salvar_ou_atualizar_firebase(
-        id_jogo=id_jogo,
-        nome_jogo=nome_limpo,
-        formato=formato,
-        url_alvo=url_alvo,
-        link_jogo=link_real
-    )
-
-    print("\n" + "="*60)
-    print("🔥 LINK PARA COLOCAR NO SEU BLOGGER (COPIE ABAIXO):")
-    print(f"{CLOUDFLARE_WORKER_URL}/?id={id_jogo}")
-    print("="*60)
-    print("📦 LINK REAL DO ARQUIVO (.ZIP / .ISO) SALVO NO FIREBASE:")
-    print(f"🔗 {link_real}")
-    print("="*60 + "\n")
+        print(f"❌ Falha de conexão com Firebase: {e}")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].startswith("http"):
-        processar_url(sys.argv[1])
+        processar_pagina(sys.argv[1])
     else:
         if os.path.exists("jogos.txt"):
             with open("jogos.txt", "r", encoding="utf-8") as f:
-                for linha in f:
-                    url = linha.strip()
-                    if url and not url.startswith("#"):
-                        processar_url(url)
+                urls = [linha.strip() for linha in f if linha.strip() and not linha.startswith("#")]
+            
+            print(f"🤖 Rodando extração automática para {len(urls)} jogo(s)...")
+            for url in urls:
+                processar_pagina(url)
+        else:
+            print("⚠️ Crie o arquivo 'jogos.txt' contendo as URLs dos jogos.")
