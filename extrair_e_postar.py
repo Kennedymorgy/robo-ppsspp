@@ -15,7 +15,7 @@ DOMINIOS_SERVIDORES = [
 
 def extrair_id_jogo(url_origem):
     url_limpa = url_origem.split('?')[0].split('#')[0].rstrip('/')
-    partes = [p for p in url_limpa.split('/') if p and p not in ['download', 'file', 'playstation-portable-rom'] and not p.isdigit()]
+    partes = [p for p in url_limpa.split('/') if p and p not in ['download', 'file', 'playstation-portable-rom', 'roms', 'psp'] and not p.isdigit()]
     id_jogo = partes[-1] if partes else "jogo"
     id_jogo = re.sub(r'(\.html|\.iso|\.cso|\.zip|\.7z|-psp-ptbr|-ppsspp|-psp|-ps2-ptbr|-ps2)$', '', id_jogo, flags=re.IGNORECASE)
     return re.sub(r'[^a-zA-Z0-9_-]', '', id_jogo).lower()
@@ -28,7 +28,7 @@ def extrair_nome_limpo(page, id_jogo):
     return nome_limpo
 
 def extrair_link_externo_de_pagina_interna(page, url_interna):
-    """Navega na página secundária para buscar o servidor real."""
+    """Navega na página secundária para buscar o servidor real (Movgamezone, Isoptbr, etc)."""
     try:
         print(f"🔄 Entrando em página secundária: {url_interna}")
         page.goto(url_interna, wait_until="domcontentloaded", timeout=25000)
@@ -42,35 +42,49 @@ def extrair_link_externo_de_pagina_interna(page, url_interna):
         print(f"⚠️ Erro na página secundária: {e}")
     return url_interna
 
-def extrair_romsgames_com_click(page, url_alvo):
-    """Clica no botão Save Game e captura a URL de download gerada após os 7s."""
+def extrair_romspedia_com_click(page, url_alvo):
+    """Processa o RomsPedia: Clica no botão, aguarda os 5s de contagem e extrai o link direto."""
     link_capturado = []
 
     def escutar_requisicoes(request):
         url = request.url
-        if "static.romsgames.net" in url or "output.bin" in url or ".zip" in url:
-            link_capturado.append(url)
+        if re.search(r'\.(zip|7z|rar|iso|cso)(\?.*)?$', url, re.IGNORECASE) or "/files/" in url:
+            if not any(ext in url for ext in [".png", ".jpg", ".css", ".js", "google"]):
+                link_capturado.append(url)
 
     page.on("request", escutar_requisicoes)
 
     try:
-        print(f"\n🌐 [ROMSGAMES] Acessando: {url_alvo}")
+        print(f"\n🌐 [ROMSPEDIA] Acessando: {url_alvo}")
         page.goto(url_alvo, wait_until="domcontentloaded", timeout=35000)
         page.wait_for_timeout(2000)
 
-        # Procura e clica no botão Save Game
-        botao_save = page.query_selector("button:has-text('Save Game'), a:has-text('Save Game'), .btn-save")
-        if botao_save:
-            print("⏳ Botão Save Game encontrado. Clicando e aguardando a contagem de 7s...")
-            botao_save.click()
-            page.wait_for_timeout(9000)  # Aguarda o timer de 7 segundos expirar
+        # Clica no botão de Download (fast ou slow)
+        botao_download = page.query_selector("a:has-text('fast'), a:has-text('slow'), a[href*='/download']")
+        if botao_download:
+            href_download = botao_download.get_attribute("href")
+            if href_download:
+                if not href_download.startswith("http"):
+                    href_download = "https://www.romspedia.com" + href_download
+                print(f"⏳ Indo para a página de contagem regressiva: {href_download}")
+                page.goto(href_download, wait_until="domcontentloaded", timeout=35000)
+                page.wait_for_timeout(7000)  # Aguarda a contagem de 5 segundos rodar
 
+        # Se capturou o link pela requisição de rede
         if link_capturado:
             print(f"🎯 Link direto extraído com sucesso: {link_capturado[0]}")
             return link_capturado[0]
 
+        # Backup: Pega o link do botão 'click here' da página de contagem
+        link_click_here = page.query_selector("a:has-text('click here')")
+        if link_click_here:
+            href_manual = link_click_here.get_attribute("href")
+            if href_manual:
+                print(f"🎯 Link do 'click here' extraído: {href_manual}")
+                return href_manual
+
     except Exception as e:
-        print(f"⚠️ Erro ao processar Romsgames: {e}")
+        print(f"⚠️ Erro ao processar RomsPedia: {e}")
 
     return url_alvo
 
@@ -114,8 +128,8 @@ def processar_pagina(url_alvo):
         page = context.new_page()
 
         try:
-            if "romsgames.net" in url_alvo:
-                link_direto = extrair_romsgames_com_click(page, url_alvo)
+            if "romspedia.com" in url_alvo:
+                link_direto = extrair_romspedia_com_click(page, url_alvo)
                 nome_jogo = extrair_nome_limpo(page, id_jogo)
             else:
                 print(f"\n🌐 Processando URL: {url_alvo}")
