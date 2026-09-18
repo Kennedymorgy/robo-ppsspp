@@ -2,6 +2,7 @@ name: Robô PPSSPP Automático
 
 on:
   schedule:
+    # Roda automaticamente a cada 10 horas para verificar links alterados
     - cron: '0 */10 * * *'
   workflow_dispatch:
     inputs:
@@ -19,35 +20,33 @@ jobs:
 
     steps:
       - name: Baixar código
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Configurar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Instalar Dependências e Navegador Playwright
+      - name: Instalar Dependências e Playwright
         run: |
           python -m pip install --upgrade pip
           pip install requests playwright
-          playwright install chromium
+          playwright install chromium --with-deps
 
-      - name: Executar Robô
-        env:
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
-          BLOGGER_EMAIL: ${{ secrets.BLOGGER_EMAIL }}
+      - name: Executar Robô Extraidor
         run: |
           if [ -n "${{ github.event.inputs.url_manual }}" ]; then
+            # Salva a URL manual no jogos.txt para ficar salva nos próximos ciclos
+            echo "${{ github.event.inputs.url_manual }}" >> jogos.txt
             python extrair_e_postar.py "${{ github.event.inputs.url_manual }}"
           else
             python extrair_e_postar.py
           fi
 
-      - name: Atualizar lista no GitHub
+      - name: Salvar e Atualizar jogos.txt no GitHub
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add jogos.txt || true
-          git commit -m "Auto: Lista de jogos atualizada" || exit 0
+          git commit -m "Auto: Nova URL adicionada ou lista atualizada" || exit 0
           git push
