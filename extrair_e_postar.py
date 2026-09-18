@@ -6,8 +6,9 @@ import random
 import requests
 from playwright.sync_api import sync_playwright
 
-# CONFIGURAÇÃO DO BANCO DE DADOS
+# CONFIGURAÇÕES DE RECURSOS
 FIREBASE_BASE_URL = "https://meublog-apks-default-rtdb.firebaseio.com"
+CLOUDFLARE_WORKER_URL = "https://orange-star-d066.claudiokennedymorgy.workers.dev"
 
 def extrair_id_jogo(url_origem):
     url_limpa = url_origem.split('?')[0].split('#')[0].rstrip('/')
@@ -28,8 +29,23 @@ def identificar_formato(texto):
         return "CHD"
     return "ISO"
 
+def eh_link_download_valido(url):
+    url_lower = url.lower()
+    # Ignora scripts do Cloudflare, scripts .js, css, etc.
+    if any(ignorar in url_lower for ignorar in ['cdn-cgi', '.js', '.css', 'google-analytics', 'facebook.net']):
+        return False
+    
+    # Valida domínios e extensões de arquivos reais de jogo
+    dominios_validos = ['romsfast.com', 'mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive', 'pixeldrain']
+    extensoes_validas = [r'\.iso', r'\.cso', r'\.zip', r'\.7z', r'\.rar', r'\.chd']
+    
+    tem_dominio = any(d in url_lower for d in dominios_validos)
+    tem_extensao = any(re.search(ext, url_lower) for ext in extensoes_validas)
+    
+    return tem_dominio or tem_extensao
+
 # -----------------------------------------------------------------------------
-# EXTRAÇÃO COM PLAYWRIGHT (OTIMIZADA PARA ROMSFUN E DEMAIS SITES)
+# EXTRAÇÃO COM PLAYWRIGHT (ROMSFUN & SITES GERAIS)
 # -----------------------------------------------------------------------------
 
 def navegar_e_extrair_com_playwright(url_alvo):
@@ -44,11 +60,10 @@ def navegar_e_extrair_com_playwright(url_alvo):
         context = browser.new_context(**dispositivo)
         page = context.new_page()
 
-        # Monitor de rede em tempo real
         def monitorar_requisicoes(request):
             url = request.url
-            if any(k in url.lower() for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive', 'uploadhaven', 'pixeldrain', 'cdn']) or re.search(r'\.(iso|cso|zip|7z|rar|chd)$', url, re.IGNORECASE):
-                if url not in links_encontrados and not url.endswith('.js') and not url.endswith('.css'):
+            if eh_link_download_valido(url):
+                if url not in links_encontrados:
                     links_encontrados.append(url)
 
         page.on("request", monitorar_requisicoes)
@@ -57,11 +72,9 @@ def navegar_e_extrair_com_playwright(url_alvo):
             print(f"🌐 Acessando: {url_alvo}")
             page.goto(url_alvo, wait_until="networkidle", timeout=60000)
 
-            # LÓGICA EXCLUSIVA PARA O ROMSFUN (Evita erro de DOM e aguarda temporizador)
             if "romsfun.com" in url_alvo:
                 print("⏳ Tratando Romsfun (Aguardando temporizador e gerando link)...")
                 try:
-                    # Espera o botão de download ficar visível
                     page.wait_for_selector('a:has-text("Download Now"), .btn-download, a:has-text("Download")', timeout=15000)
                     time.sleep(2)
 
@@ -71,11 +84,10 @@ def navegar_e_extrair_com_playwright(url_alvo):
                         print("⏱️ Botão acionado. Aguardando 12 segundos do temporizador...")
                         time.sleep(12)
 
-                    # Busca o botão gerado após o temporizador
                     btn_final = page.query_selector('a[download], a.btn-download-file, a:has-text("Download Now")')
                     if btn_final:
                         href_final = btn_final.get_attribute('href')
-                        if href_final and href_final not in links_encontrados:
+                        if href_final and eh_link_download_valido(href_final) and href_final not in links_encontrados:
                             links_encontrados.append(href_final)
                         btn_final.click()
                         time.sleep(3)
@@ -83,7 +95,6 @@ def navegar_e_extrair_com_playwright(url_alvo):
                     print(f"⚠️ Aviso Romsfun: {e}")
 
             else:
-                # Clique genérico para outros sites
                 seletores = 'a:has-text("Download"), a:has-text("Baixar"), button:has-text("Download"), .btn-download, #download-btn'
                 botoes = page.query_selector_all(seletores)
                 for btn in botoes[:3]:
@@ -95,24 +106,15 @@ def navegar_e_extrair_com_playwright(url_alvo):
 
             html_content = page.content()
 
-            # Varredura extra em todos os links da árvore HTML
             hrefs = page.eval_on_selector_all('a[href]', 'elements => elements.map(e => e.href)')
             for h in hrefs:
-                if any(k in h.lower() for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive', 'pixeldrain']) or re.search(r'\.(iso|cso|zip|7z|rar|chd)$', h, re.IGNORECASE):
-                    if h not in links_encontrados and not h.endswith('#'):
-                        links_encontrados.append(h)
+                if eh_link_download_valido(h) and h not in links_encontrados:
+                    links_encontrados.append(h)
 
         except Exception as e:
             print(f"⚠️ Erro no Playwright: {e}")
         finally:
             browser.close()
-
-    # SAÍDA EM TEXTO NO TERMINAL DO GITHUB ACTIONS PARA VISUALIZAÇÃO DIRETA
-    print("\n" + "="*50)
-    print("🎯 LINK(S) EXTRAÍDO(S) COM SUCESSO:")
-    for l in links_encontrados:
-        print(f"🔗 {l}")
-    print("="*50 + "\n")
 
     return html_content, links_encontrados
 
@@ -209,6 +211,19 @@ def processar_url(url_alvo):
         link_savedata=link_savedata,
         link_texturas=link_texturas
     )
+
+    # IMPRESSÃO DAS URLS FORMATADAS PARA COPIAR PRO BLOGGER
+    print("\n" + "="*60)
+    print("🔥 LINK PARA COLOCAR NO SEU BLOGGER (COPIE ABAIXO):")
+    print(f"{CLOUDFLARE_WORKER_URL}/?id={id_jogo}")
+    if link_savedata:
+        print(f"{CLOUDFLARE_WORKER_URL}/?id={id_jogo}&type=save")
+    if link_texturas:
+        print(f"{CLOUDFLARE_WORKER_URL}/?id={id_jogo}&type=texture")
+    print("="*60)
+    print("📦 LINK REAL EXTRAÍDO E SALVO NO FIREBASE:")
+    print(f"🔗 {link_jogo}")
+    print("="*60 + "\n")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].startswith("http"):
