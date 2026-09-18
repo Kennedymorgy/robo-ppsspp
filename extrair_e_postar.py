@@ -29,7 +29,7 @@ def identificar_formato(texto):
     return "ISO"
 
 # -----------------------------------------------------------------------------
-# EXTRAÇÃO COM PLAYWRIGHT (AVANÇADA)
+# EXTRAÇÃO COM PLAYWRIGHT (OTIMIZADA PARA ROMSFUN E DEMAIS SITES)
 # -----------------------------------------------------------------------------
 
 def navegar_e_extrair_com_playwright(url_alvo):
@@ -47,7 +47,7 @@ def navegar_e_extrair_com_playwright(url_alvo):
         # Monitor de rede em tempo real
         def monitorar_requisicoes(request):
             url = request.url
-            if any(k in url.lower() for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive', 'uploadhaven', 'pixeldrain']) or re.search(r'\.(iso|cso|zip|7z|rar|chd)$', url, re.IGNORECASE):
+            if any(k in url.lower() for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive', 'uploadhaven', 'pixeldrain', 'cdn']) or re.search(r'\.(iso|cso|zip|7z|rar|chd)$', url, re.IGNORECASE):
                 if url not in links_encontrados and not url.endswith('.js') and not url.endswith('.css'):
                     links_encontrados.append(url)
 
@@ -55,43 +55,64 @@ def navegar_e_extrair_com_playwright(url_alvo):
 
         try:
             print(f"🌐 Acessando: {url_alvo}")
-            page.goto(url_alvo, wait_until="domcontentloaded", timeout=40000)
-            time.sleep(4)
+            page.goto(url_alvo, wait_until="networkidle", timeout=60000)
 
-            # Lógica especial para Romsfun e sites com temporizador/botão dinâmico
+            # LÓGICA EXCLUSIVA PARA O ROMSFUN (Evita erro de DOM e aguarda temporizador)
             if "romsfun.com" in url_alvo:
-                print("⏳ Tratando Romsfun (Aguardando botões e downloads)...")
+                print("⏳ Tratando Romsfun (Aguardando temporizador e gerando link)...")
                 try:
-                    btn_download = page.query_selector('a:has-text("Download Now"), button:has-text("Download Now"), .btn-download')
-                    if btn_download:
-                        btn_download.click()
-                        time.sleep(5)
-                except Exception as e:
-                    print(f"Info Romsfun: {e}")
-
-            # Cliques genéricos nos 3 primeiros botões de download identificados na página
-            seletores = 'a:has-text("Download"), a:has-text("Baixar"), button:has-text("Download"), .btn-download, #download-btn'
-            botoes = page.query_selector_all(seletores)
-            for btn in botoes[:3]:
-                try:
-                    btn.click(timeout=3000)
+                    # Espera o botão de download ficar visível
+                    page.wait_for_selector('a:has-text("Download Now"), .btn-download, a:has-text("Download")', timeout=15000)
                     time.sleep(2)
-                except Exception:
-                    pass
+
+                    btn_inicial = page.query_selector('a:has-text("Download Now"), .btn-download, a:has-text("Download")')
+                    if btn_inicial:
+                        btn_inicial.click()
+                        print("⏱️ Botão acionado. Aguardando 12 segundos do temporizador...")
+                        time.sleep(12)
+
+                    # Busca o botão gerado após o temporizador
+                    btn_final = page.query_selector('a[download], a.btn-download-file, a:has-text("Download Now")')
+                    if btn_final:
+                        href_final = btn_final.get_attribute('href')
+                        if href_final and href_final not in links_encontrados:
+                            links_encontrados.append(href_final)
+                        btn_final.click()
+                        time.sleep(3)
+                except Exception as e:
+                    print(f"⚠️ Aviso Romsfun: {e}")
+
+            else:
+                # Clique genérico para outros sites
+                seletores = 'a:has-text("Download"), a:has-text("Baixar"), button:has-text("Download"), .btn-download, #download-btn'
+                botoes = page.query_selector_all(seletores)
+                for btn in botoes[:3]:
+                    try:
+                        btn.click(timeout=3000)
+                        time.sleep(2)
+                    except Exception:
+                        pass
 
             html_content = page.content()
 
-            # Varredura final de todos os links 'href' na árvore do HTML
+            # Varredura extra em todos os links da árvore HTML
             hrefs = page.eval_on_selector_all('a[href]', 'elements => elements.map(e => e.href)')
             for h in hrefs:
                 if any(k in h.lower() for k in ['mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive', 'pixeldrain']) or re.search(r'\.(iso|cso|zip|7z|rar|chd)$', h, re.IGNORECASE):
-                    if h not in links_encontrados:
+                    if h not in links_encontrados and not h.endswith('#'):
                         links_encontrados.append(h)
 
         except Exception as e:
             print(f"⚠️ Erro no Playwright: {e}")
         finally:
             browser.close()
+
+    # SAÍDA EM TEXTO NO TERMINAL DO GITHUB ACTIONS PARA VISUALIZAÇÃO DIRETA
+    print("\n" + "="*50)
+    print("🎯 LINK(S) EXTRAÍDO(S) COM SUCESSO:")
+    for l in links_encontrados:
+        print(f"🔗 {l}")
+    print("="*50 + "\n")
 
     return html_content, links_encontrados
 
@@ -112,7 +133,6 @@ def classificar_links(links_capturados, url_alvo):
             if not link_jogo:
                 link_jogo = link
 
-    # Fallback se não detectar link direto do gerenciador
     if not link_jogo and links_capturados:
         link_jogo = links_capturados[0]
     elif not link_jogo:
@@ -144,7 +164,6 @@ def salvar_ou_atualizar_firebase(id_jogo, nome_jogo, formato, url_alvo, link_jog
         "tipo": f"PPSSPP {formato}"
     }
 
-    # SE JÁ EXISTIR, VERIFICA SE OS LINKS MUDARAM
     if dados_existentes:
         mudou = (
             dados_existentes.get("link_direto") != link_jogo or
@@ -158,7 +177,6 @@ def salvar_ou_atualizar_firebase(id_jogo, nome_jogo, formato, url_alvo, link_jog
 
         print(f"🔄 [LINK ATUALIZADO DETECTADO] Atualizando links do jogo '{id_jogo}' no Firebase...")
 
-    # EXECUTA A GRAVAÇÃO / ATUALIZAÇÃO
     try:
         res = requests.patch(endpoint, json=novos_dados, timeout=10)
         if res.status_code == 200:
@@ -174,7 +192,6 @@ def processar_url(url_alvo):
     id_jogo = extrair_id_jogo(url_alvo)
     html, links_capturados = navegar_e_extrair_com_playwright(url_alvo)
 
-    # Definição do Nome
     nome_limpo = id_jogo.replace('-', ' ').title()
     m_titulo = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
     if m_titulo:
