@@ -36,7 +36,11 @@ def eh_link_download_valido(url):
         return False
     
     # Valida domínios e extensões de arquivos reais de jogo
-    dominios_validos = ['romsfast.com', 'mediafire.com', 'mega.nz', 'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 'fastdrive', 'pixeldrain']
+    dominios_validos = [
+        'romsgames.net', 'romsfast.com', 'mediafire.com', 'mega.nz', 
+        'drive.google.com', 'modsfire.com', 'sharemods.com', 'send.cm', 
+        'fastdrive', 'pixeldrain', 'archive.org'
+    ]
     extensoes_validas = [r'\.iso', r'\.cso', r'\.zip', r'\.7z', r'\.rar', r'\.chd']
     
     tem_dominio = any(d in url_lower for d in dominios_validos)
@@ -45,7 +49,7 @@ def eh_link_download_valido(url):
     return tem_dominio or tem_extensao
 
 # -----------------------------------------------------------------------------
-# EXTRAÇÃO COM PLAYWRIGHT (ROMSFUN & SITES GERAIS)
+# EXTRAÇÃO COM PLAYWRIGHT (ROMSGAMES.NET & DEMAIS SITES)
 # -----------------------------------------------------------------------------
 
 def navegar_e_extrair_com_playwright(url_alvo):
@@ -63,7 +67,7 @@ def navegar_e_extrair_com_playwright(url_alvo):
         def monitorar_requisicoes(request):
             url = request.url
             if eh_link_download_valido(url):
-                if url not in links_encontrados:
+                if url not in links_encontrados and url != url_alvo:
                     links_encontrados.append(url)
 
         page.on("request", monitorar_requisicoes)
@@ -72,8 +76,34 @@ def navegar_e_extrair_com_playwright(url_alvo):
             print(f"🌐 Acessando: {url_alvo}")
             page.goto(url_alvo, wait_until="networkidle", timeout=60000)
 
-            if "romsfun.com" in url_alvo:
-                print("⏳ Tratando Romsfun (Aguardando temporizador e gerando link)...")
+            # LÓGICA ESPECÍFICA PARA ROMSGAMES.NET
+            if "romsgames.net" in url_alvo:
+                print("⏳ Tratando Romsgames.net (Aguardando temporizador e gerando link)...")
+                try:
+                    # Espera o botão inicial de download
+                    page.wait_for_selector('a:has-text("Save Game"), button:has-text("Save Game"), a:has-text("Download")', timeout=15000)
+                    time.sleep(2)
+
+                    btn_inicial = page.query_selector('a:has-text("Save Game"), button:has-text("Save Game"), a:has-text("Download")')
+                    if btn_inicial:
+                        btn_inicial.click()
+                        print("⏱️ Botão acionado. Aguardando 10 segundos do temporizador...")
+                        time.sleep(10)
+
+                    # Tenta capturar o link direto gerado após o temporizador
+                    btn_final = page.query_selector('a[href*=".zip"], a[href*=".iso"], a[href*=".7z"], a:has-text("Click Here"), a:has-text("Download")')
+                    if btn_final:
+                        href_final = btn_final.get_attribute('href')
+                        if href_final and eh_link_download_valido(href_final) and href_final not in links_encontrados:
+                            links_encontrados.append(href_final)
+                        btn_final.click()
+                        time.sleep(3)
+                except Exception as e:
+                    print(f"⚠️ Aviso Romsgames: {e}")
+
+            # LÓGICA PARA ROMSFUN.COM
+            elif "romsfun.com" in url_alvo:
+                print("⏳ Tratando Romsfun (Aguardando temporizador)...")
                 try:
                     page.wait_for_selector('a:has-text("Download Now"), .btn-download, a:has-text("Download")', timeout=15000)
                     time.sleep(2)
@@ -95,6 +125,7 @@ def navegar_e_extrair_com_playwright(url_alvo):
                     print(f"⚠️ Aviso Romsfun: {e}")
 
             else:
+                # Clique genérico em botões de download
                 seletores = 'a:has-text("Download"), a:has-text("Baixar"), button:has-text("Download"), .btn-download, #download-btn'
                 botoes = page.query_selector_all(seletores)
                 for btn in botoes[:3]:
@@ -106,9 +137,10 @@ def navegar_e_extrair_com_playwright(url_alvo):
 
             html_content = page.content()
 
+            # Varredura extra em links <a> no DOM
             hrefs = page.eval_on_selector_all('a[href]', 'elements => elements.map(e => e.href)')
             for h in hrefs:
-                if eh_link_download_valido(h) and h not in links_encontrados:
+                if eh_link_download_valido(h) and h not in links_encontrados and h != url_alvo:
                     links_encontrados.append(h)
 
         except Exception as e:
