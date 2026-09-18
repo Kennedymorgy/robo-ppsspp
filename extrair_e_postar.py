@@ -4,7 +4,6 @@ import re
 import time
 import random
 import requests
-from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 # CONFIGURAÇÕES DE RECURSOS
@@ -47,45 +46,30 @@ def extrair_romsgames_direto(url_alvo):
     try:
         # 1. Acessa a página principal
         r1 = session.get(url_alvo, timeout=20)
-        soup = BeautifulSoup(r1.text, 'html.parser')
-
-        # 2. Localiza o formulário ou botão de download "Save Game"
-        # Romsgames usa formulário POST ou link direto para /download/
-        download_url = None
         
-        # Tenta achar link de download direto na estrutura HTML
-        for a in soup.find_all('a', href=True):
-            if '/download/' in a['href'] or 'download' in a.get('class', []):
-                download_url = a['href']
-                if not download_url.startswith('http'):
-                    download_url = f"https://www.romsgames.net{download_url}"
-                break
-
-        # Se não achou link relativo, verifica formulário
-        if not download_url:
-            form = soup.find('form', action=re.compile(r'/download/'))
-            if form:
-                action = form['action']
-                download_url = action if action.startswith('http') else f"https://www.romsgames.net{action}"
+        # Procura por links contendo /download/
+        links_download = re.findall(r'href=["\']([^"\']*/download/[^"\']*)["\']', r1.text, re.IGNORECASE)
+        
+        download_url = None
+        if links_download:
+            download_url = links_download[0]
+            if not download_url.startswith('http'):
+                download_url = f"https://www.romsgames.net{download_url}"
 
         if download_url:
             print(f"⏳ Acessando página do gerador de download: {download_url}")
-            time.sleep(5) # Aguarda tempo do servidor liberar o token
+            time.sleep(5)
             
             r2 = session.get(download_url, timeout=20)
-            soup2 = BeautifulSoup(r2.text, 'html.parser')
-
-            # Busca links com extensões reais de arquivo (.zip, .iso, .7z, .rar)
-            for a in soup2.find_all('a', href=True):
-                href = a['href']
-                if re.search(r'\.(zip|iso|7z|rar|cso|chd)(\?.*)?$', href, re.IGNORECASE):
-                    print(f"🎯 LINK REAL DO ARQUIVO ENCONTRADO: {href}")
-                    return href, r1.text
-
-                # Se for link CDN hospedado internamente
-                if 'files' in href or 'cdn' in href or 'media' in href:
-                    if not any(x in href for x in ['.png', '.jpg', '.css', '.js']):
-                        return href, r1.text
+            
+            # Busca links de arquivos diretos (.zip, .iso, .7z, .rar)
+            arquivos = re.findall(r'href=["\']([^"\']+\.(?:zip|iso|7z|rar|cso|chd)(?:\?[^"\']*)?)["\']', r2.text, re.IGNORECASE)
+            if arquivos:
+                link_final = arquivos[0]
+                if not link_final.startswith('http'):
+                    link_final = f"https://www.romsgames.net{link_final}"
+                print(f"🎯 LINK REAL DO ARQUIVO ENCONTRADO: {link_final}")
+                return link_final, r1.text
 
     except Exception as e:
         print(f"⚠️ Erro ao extrair Romsgames via HTTP: {e}")
@@ -110,7 +94,6 @@ def navegar_e_extrair_com_playwright(url_alvo):
 
         try:
             print(f"🌐 Acessando via Playwright: {url_alvo}")
-            # domcontentloaded evita o erro de Timeout por propaganda infinita
             page.goto(url_alvo, wait_until="domcontentloaded", timeout=30000)
             time.sleep(3)
 
@@ -180,17 +163,14 @@ def processar_url(url_alvo):
     link_real = None
     html = ""
 
-    # TRATAMENTO DEDICADO PARA ROMSGAMES.NET
     if "romsgames.net" in url_alvo:
         link_real, html = extrair_romsgames_direto(url_alvo)
 
-    # SE NÃO ACHOU OU FOR OUTRO SITE, USA PLAYWRIGHT COM MODO RÁPIDO (domcontentloaded)
     if not link_real:
         html, links_capturados = navegar_e_extrair_com_playwright(url_alvo)
         if links_capturados:
             link_real = links_capturados[0]
 
-    # SE AINDA NÃO ACHOU, APLICA FALLBACK PARA A PRÓPRIA URL
     if not link_real:
         print("⚠️ Não foi possível capturar o arquivo final automaticamente. Salvando URL de origem.")
         link_real = url_alvo
@@ -210,7 +190,6 @@ def processar_url(url_alvo):
         link_jogo=link_real
     )
 
-    # IMPRESSÃO DA SAÍDA
     print("\n" + "="*60)
     print("🔥 LINK PARA COLOCAR NO SEU BLOGGER (COPIE ABAIXO):")
     print(f"{CLOUDFLARE_WORKER_URL}/?id={id_jogo}")
