@@ -12,7 +12,16 @@ DOMINIOS_SERVIDORES = [
     "mediafire.com", "mega.nz", "mega.io", "drive.google.com", "archive.org", 
     "workupload.com", "terabox.com", "terabox.app", "1024tera.com", "gofile.io", 
     "modsfire.com", "sharemods.com", "encurtanet.com", "uploadhaven.com", 
-    "pixeldrain.com", "1fichier.com", "krakenfiles.com", "usersdrive.com"
+    "pixeldrain.com", "1fichier.com", "krakenfiles.com", "usersdrive.com",
+    "sfile.mobi"
+]
+
+BLACKLIST_KEYWORDS = [
+    "google.com/policies", "google.com/terms", "policies.google.com",
+    "accounts.google.com", "blogger.com", "facebook.com", "twitter.com",
+    "instagram.com", "whatsapp.com", "telegram.org", "youtube.com",
+    "zarchiver", "privacy", "terms", "contact", "about", "disclaimer",
+    "google.com/sorry", "google.com/url", "schema.org", "w3.org"
 ]
 
 def limpa_url(url):
@@ -34,6 +43,13 @@ def limpa_url(url):
         return ""
     return url
 
+def is_blacklisted(url):
+    """Verifica se a URL é lixo (termos do google, redes sociais, politicas)."""
+    if not url:
+        return True
+    url_low = url.lower()
+    return any(kw in url_low for kw in BLACKLIST_KEYWORDS)
+
 def extrair_id_jogo(url_origem):
     url_limpa = url_origem.split('?')[0].split('#')[0].rstrip('/')
     partes = [p for p in url_limpa.split('/') if p and p not in ['download', 'file', 'playstation-portable-rom', 'roms', 'psp'] and not p.isdigit()]
@@ -49,8 +65,9 @@ def extrair_nome_limpo(page, id_jogo):
     return nome_limpo
 
 def extrair_link_externo_de_pagina_interna(page, url_interna):
+    """Navega na página secundária apenas se for um botão válido de download."""
     url_interna = limpa_url(url_interna)
-    if not url_interna or "google.com/sorry" in url_interna:
+    if not url_interna or is_blacklisted(url_interna):
         return ""
 
     try:
@@ -61,13 +78,13 @@ def extrair_link_externo_de_pagina_interna(page, url_interna):
         hrefs = page.eval_on_selector_all("a[href]", "elements => elements.map(e => e.href)")
         for h in hrefs:
             h_limpo = limpa_url(h)
-            if not h_limpo or "google.com/sorry" in h_limpo:
+            if not h_limpo or is_blacklisted(h_limpo):
                 continue
             if any(dom in h_limpo for dom in DOMINIOS_SERVIDORES) or re.search(r'\.(zip|7z|rar|iso|cso)(\?.*)?$', h_limpo, re.IGNORECASE):
                 return h_limpo
     except Exception as e:
         print(f"⚠️ Erro na página secundária: {e}")
-    return url_interna
+    return ""
 
 def extrair_romspedia_com_click(page, url_alvo):
     link_capturado = []
@@ -117,8 +134,9 @@ def extrair_links_com_contexto(page, url_alvo):
     elementos = page.eval_on_selector_all("a[href]", """
         elements => elements.map(e => ({
             href: e.href,
-            text: (e.innerText || '').toLowerCase(),
-            parentText: (e.parentElement ? e.parentElement.innerText : '').toLowerCase()
+            text: (e.innerText || '').toLowerCase().trim(),
+            parentText: (e.parentElement ? e.parentElement.innerText : '').toLowerCase().trim(),
+            className: (e.className || '').toLowerCase()
         }))
     """)
 
@@ -130,42 +148,44 @@ def extrair_links_com_contexto(page, url_alvo):
 
     for item in elementos:
         href = limpa_url(item["href"])
-        if not href or "google.com/sorry" in href:
+        if not href or is_blacklisted(href):
             continue
 
         parsed_href = urllib.parse.urlparse(href)
         dominio_href = parsed_href.netloc.replace("www.", "")
 
-        # Ignora links que pertencem ao próprio blog (evita puxar a URL da postagem)
+        # Ignorar navegacao interna do proprio blog (categorias, buscas, etc)
         if dominio_atual and dominio_atual in dominio_href:
-            continue
-
-        if any(ignorar in href for ignorar in ["facebook.com", "twitter.com", "instagram.com", "whatsapp.com", "telegram.org", "/category/", "zarchiver"]):
-            continue
+            if href.rstrip('/') == url_alvo.rstrip('/') or "/search" in href or "/category/" in href or href == f"https://{dominio_atual}/":
+                continue
 
         texto = item["text"]
-        contexto = f"{texto} {item['parentText']}"
+        contexto = f"{texto} {item['parentText']} {item['className']}"
 
-        is_savedata = any(k in contexto for k in ["savedata", "save data", "save-data", "unlock character", "personagens"])
+        is_savedata = any(k in contexto for k in ["savedata", "save data", "save-data", "unlock character", "personagens", "save"])
         is_servidor = any(dom in href for dom in DOMINIOS_SERVIDORES)
         is_arquivo = re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', href, re.IGNORECASE)
-        is_botao = any(k in contexto for k in ["download", "modsfire", "sharemods", "mediafire", "mega", "alternativelink", "cso", "iso", "zip"])
+        is_botao = any(k in contexto for k in ["download", "modsfire", "sharemods", "mediafire", "mega", "gofile", "terabox", "opção", "option", "link", "servidor", "server", "cso", "iso", "zip"])
 
-        if is_savedata:
-            if is_servidor or is_arquivo or is_botao:
-                if href not in candidatos_savedata:
-                    candidatos_savedata.append(href)
-        else:
-            if is_servidor or is_arquivo or is_botao:
-                if href not in candidatos_direto:
-                    candidatos_direto.append(href)
-            elif not candidatos_direto:
-                candidatos_direto.append(href)
+        prioridade = 0
+        if is_servidor or is_arquivo:
+            prioridade = 2
+        elif is_botao:
+            prioridade = 1
+
+        if prioridade > 0:
+            if is_savedata:
+                candidatos_savedata.append((prioridade, href))
+            else:
+                candidatos_direto.append((prioridade, href))
+
+    candidatos_direto.sort(key=lambda x: x[0], reverse=True)
+    candidatos_savedata.sort(key=lambda x: x[0], reverse=True)
 
     if candidatos_direto:
-        dados["link_direto"] = candidatos_direto[0]
+        dados["link_direto"] = candidatos_direto[0][1]
     if candidatos_savedata:
-        dados["link_savedata"] = candidatos_savedata[0]
+        dados["link_savedata"] = candidatos_savedata[0][1]
 
     return dados
 
@@ -194,31 +214,36 @@ def processar_pagina(url_alvo):
                 link_direto = links["link_direto"]
                 link_savedata = links["link_savedata"]
 
-                if link_direto and not any(dom in link_direto for dom in DOMINIOS_SERVIDORES) and not re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', link_direto, re.IGNORECASE):
-                    link_direto = extrair_link_externo_de_pagina_interna(page, link_direto)
+                # Se a ISO ainda não for link direto do servidor, resolve a página intermediária
+                if link_direto and not is_blacklisted(link_direto):
+                    if not any(dom in link_direto for dom in DOMINIOS_SERVIDORES) and not re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', link_direto, re.IGNORECASE):
+                        res = extrair_link_externo_de_pagina_interna(page, link_direto)
+                        if res:
+                            link_direto = res
 
-                if link_savedata and not any(dom in link_savedata for dom in DOMINIOS_SERVIDORES) and not re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', link_savedata, re.IGNORECASE):
-                    link_savedata = extrair_link_externo_de_pagina_interna(page, link_savedata)
+                # Se o SaveData ainda não for link direto do servidor, resolve a página intermediária
+                if link_savedata and not is_blacklisted(link_savedata):
+                    if not any(dom in link_savedata for dom in DOMINIOS_SERVIDORES) and not re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', link_savedata, re.IGNORECASE):
+                        res = extrair_link_externo_de_pagina_interna(page, link_savedata)
+                        if res:
+                            link_savedata = res
 
         except Exception as e:
             print(f"⚠️ Erro ao navegar: {e}")
         finally:
             browser.close()
 
-    link_direto = limpa_url(link_direto)
-    link_savedata = limpa_url(link_savedata)
-
-    # Se por acaso não achar nada válido, deixa vazio em vez de salvar a URL do blog
-    if not link_direto or "google.com/sorry" in link_direto or url_alvo in link_direto:
+    # Validação final de segurança
+    if is_blacklisted(link_direto) or link_direto == url_alvo:
         link_direto = ""
 
-    if "google.com/sorry" in link_savedata or url_alvo in link_savedata:
+    if is_blacklisted(link_savedata) or link_savedata == url_alvo:
         link_savedata = ""
 
     if link_direto:
         salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata)
     else:
-        print(f"❌ Não foi possível extrair o link real para: {url_alvo}")
+        print(f"❌ Não foi possível extrair um link válido de servidor para: {url_alvo}")
 
 def salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata):
     endpoint = f"{FIREBASE_BASE_URL.rstrip('/')}/ppsspp/{id_jogo}.json"
@@ -255,7 +280,8 @@ def salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata)
             if link_savedata:
                 print(f"💾 Cloudflare Savedata: {CLOUDFLARE_WORKER_URL}/?id={id_jogo}&type=savedata")
             print(f"📦 ISO Real: {link_direto}")
-            if link_savedata: print(f"💾 Savedata Real: {link_savedata}")
+            if link_savedata:
+                print(f"💾 Savedata Real: {link_savedata}")
             print("="*60 + "\n")
     except Exception as e:
         print(f"❌ Erro ao salvar no Firebase: {e}")
