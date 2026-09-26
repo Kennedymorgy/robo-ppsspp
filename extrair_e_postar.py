@@ -49,7 +49,6 @@ def extrair_nome_limpo(page, id_jogo):
     return nome_limpo
 
 def extrair_link_externo_de_pagina_interna(page, url_interna):
-    """Navega na página secundária para buscar o servidor real, ignorando telas do Google."""
     url_interna = limpa_url(url_interna)
     if not url_interna or "google.com/sorry" in url_interna:
         return ""
@@ -71,7 +70,6 @@ def extrair_link_externo_de_pagina_interna(page, url_interna):
     return url_interna
 
 def extrair_romspedia_com_click(page, url_alvo):
-    """Processa o RomsPedia: Clica no botão, aguarda a contagem e extrai o link direto."""
     link_capturado = []
 
     def escutar_requisicoes(request):
@@ -113,7 +111,7 @@ def extrair_romspedia_com_click(page, url_alvo):
 
     return url_alvo
 
-def extrair_links_com_contexto(page):
+def extrair_links_com_contexto(page, url_alvo):
     dados = {"link_direto": "", "link_savedata": ""}
     
     elementos = page.eval_on_selector_all("a[href]", """
@@ -124,27 +122,50 @@ def extrair_links_com_contexto(page):
         }))
     """)
 
+    parsed_alvo = urllib.parse.urlparse(url_alvo)
+    dominio_atual = parsed_alvo.netloc.replace("www.", "")
+
+    candidatos_direto = []
+    candidatos_savedata = []
+
     for item in elementos:
         href = limpa_url(item["href"])
         if not href or "google.com/sorry" in href:
             continue
 
-        contexto = f"{item['text']} {item['parentText']}"
+        parsed_href = urllib.parse.urlparse(href)
+        dominio_href = parsed_href.netloc.replace("www.", "")
+
+        # Ignora links que pertencem ao próprio blog (evita puxar a URL da postagem)
+        if dominio_atual and dominio_atual in dominio_href:
+            continue
 
         if any(ignorar in href for ignorar in ["facebook.com", "twitter.com", "instagram.com", "whatsapp.com", "telegram.org", "/category/", "zarchiver"]):
             continue
 
+        texto = item["text"]
+        contexto = f"{texto} {item['parentText']}"
+
         is_savedata = any(k in contexto for k in ["savedata", "save data", "save-data", "unlock character", "personagens"])
-        is_arquivo = re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', href, re.IGNORECASE)
         is_servidor = any(dom in href for dom in DOMINIOS_SERVIDORES)
-        is_botao = any(k in contexto for k in ["download", "modsfire", "sharemods", "mediafire", "mega", "alternativelink"])
+        is_arquivo = re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', href, re.IGNORECASE)
+        is_botao = any(k in contexto for k in ["download", "modsfire", "sharemods", "mediafire", "mega", "alternativelink", "cso", "iso", "zip"])
 
         if is_savedata:
-            if not dados["link_savedata"] and (is_arquivo or is_servidor or is_botao):
-                dados["link_savedata"] = href
+            if is_servidor or is_arquivo or is_botao:
+                if href not in candidatos_savedata:
+                    candidatos_savedata.append(href)
         else:
-            if not dados["link_direto"] and (is_arquivo or is_servidor or is_botao):
-                dados["link_direto"] = href
+            if is_servidor or is_arquivo or is_botao:
+                if href not in candidatos_direto:
+                    candidatos_direto.append(href)
+            elif not candidatos_direto:
+                candidatos_direto.append(href)
+
+    if candidatos_direto:
+        dados["link_direto"] = candidatos_direto[0]
+    if candidatos_savedata:
+        dados["link_savedata"] = candidatos_savedata[0]
 
     return dados
 
@@ -168,16 +189,14 @@ def processar_pagina(url_alvo):
                 page.wait_for_timeout(3000)
 
                 nome_jogo = extrair_nome_limpo(page, id_jogo)
-                links = extrair_links_com_contexto(page)
+                links = extrair_links_com_contexto(page, url_alvo)
 
                 link_direto = links["link_direto"]
                 link_savedata = links["link_savedata"]
 
-                # Resolve link secundário da ISO se não for link direto de servidor
                 if link_direto and not any(dom in link_direto for dom in DOMINIOS_SERVIDORES) and not re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', link_direto, re.IGNORECASE):
                     link_direto = extrair_link_externo_de_pagina_interna(page, link_direto)
 
-                # Resolve link secundário do Save Data se não for link direto de servidor
                 if link_savedata and not any(dom in link_savedata for dom in DOMINIOS_SERVIDORES) and not re.search(r'\.(iso|cso|zip|7z|rar|chd)(\?.*)?$', link_savedata, re.IGNORECASE):
                     link_savedata = extrair_link_externo_de_pagina_interna(page, link_savedata)
 
@@ -186,17 +205,20 @@ def processar_pagina(url_alvo):
         finally:
             browser.close()
 
-    # Filtro final de segurança para nunca salvar link do Google Captcha
     link_direto = limpa_url(link_direto)
     link_savedata = limpa_url(link_savedata)
 
-    if not link_direto or "google.com/sorry" in link_direto:
-        link_direto = limpa_url(url_alvo)
+    # Se por acaso não achar nada válido, deixa vazio em vez de salvar a URL do blog
+    if not link_direto or "google.com/sorry" in link_direto or url_alvo in link_direto:
+        link_direto = ""
 
-    if "google.com/sorry" in link_savedata:
+    if "google.com/sorry" in link_savedata or url_alvo in link_savedata:
         link_savedata = ""
 
-    salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata)
+    if link_direto:
+        salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata)
+    else:
+        print(f"❌ Não foi possível extrair o link real para: {url_alvo}")
 
 def salvar_no_firebase(id_jogo, nome_jogo, url_alvo, link_direto, link_savedata):
     endpoint = f"{FIREBASE_BASE_URL.rstrip('/')}/ppsspp/{id_jogo}.json"
