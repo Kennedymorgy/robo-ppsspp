@@ -16,7 +16,7 @@ try:
 except ImportError:
     stealth_sync = None
 
-# Pega as chaves salvas nos Secrets do GitHub
+# VÁRIÁVEIS DE AMBIENTE DOS SECRETS DO GITHUB
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -26,65 +26,59 @@ GREEN_API_GROUP_ID = os.environ.get("GREEN_API_GROUP_ID")
 
 GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
 
-# URL DA SUA CLOUDFLARE WORKER
+# SUAS CONFIGURAÇÕES
 URL_WORKER = "https://orange-star-d066.claudiokennedymorgy.workers.dev"
-
-# SEU BLOG OFICIAL
 PAGINA_INICIAL_BLOG = "https://k-404modapk.blogspot.com/"
 FOTO_OFICIAL_SITE = "https://k-404modapk.blogspot.com/favicon.ico"
 
-# LISTA DE DOMÍNIOS DE ALOJAMENTO E EXTENSÕES VÁLIDAS DE JOGOS/ISOS/APKS
+# LISTA EXPANDIDA DE DOMÍNIOS DE ALOJAMENTO E ENCURTADORES DE JOGOS/ISOS/APKS
 DOMINIOS_ALOJAMENTO = [
     "modsfire.com", "sharemods.com", "mediafire.com", "mega.nz", "mega.io",
     "drive.google.com", "uploadfiles.eu", "1fichier.com", "modyolo", "modplays",
-    "dl.modplays.com", "terabox", "sfile.mobi", "apkpure.com", "dropapk"
+    "dl.modplays.com", "terabox", "1024tera", "freeterabox", "sfile.mobi", 
+    "apkpure.com", "dropapk", "file-upload", "uploadhaven", "zippyshare",
+    "modshost", "sub2unlock", "sub4unlock", "boost.ink", "linkvertise",
+    "ouo.io", "ouo.press", "tinylink", "krakenfiles.com", "pixeldrain.com",
+    "gofile.io", "workupload.com", "katfile.com", "nitroflare.com", "rapidgator.net"
 ]
 
-EXTENSOES_JOGO = [".apk", ".iso", ".cso", ".zip", ".rar", ".7z"]
+DOMINIOS_IGNORAR = [
+    "facebook.com", "twitter.com", "x.com", "instagram.com", "youtube.com",
+    "youtu.be", "telegram.me", "t.me", "whatsapp.com", "pinterest.com",
+    "blogger.com", "blogspot.com", "google.com/search", "schema.org",
+    "w3.org", "github.com"
+]
+
+EXTENSOES_JOGO = [".apk", ".iso", ".cso", ".zip", ".rar", ".7z", ".xapk", ".apks"]
 
 def notificar_google_indexing_api(url_para_indexar):
-    """Envia solicitação para a Google Indexing API para indexar/atualizar a URL no Google Search."""
-    if not GOOGLE_CREDENTIALS_JSON:
-        print("⚠️ GOOGLE_CREDENTIALS_JSON não configurado nos Secrets. Pulando Google Indexing.")
-        return
-
-    if not service_account:
-        print("⚠️ Módulo 'google-auth' não encontrado. Certifique-se de adicioná-lo no requirements.txt.")
+    """Envia solicitação para a Google Indexing API."""
+    if not GOOGLE_CREDENTIALS_JSON or not service_account:
         return
 
     url_limpa = url_para_indexar.split('?')[0]
-
     try:
         info = json.loads(GOOGLE_CREDENTIALS_JSON)
         scopes = ["https://www.googleapis.com/auth/indexing"]
         credentials = service_account.Credentials.from_service_account_info(info, scopes=scopes)
-        
         req = google.auth.transport.requests.Request()
         credentials.refresh(req)
-        token = credentials.token
 
         endpoint = "https://indexing.googleapis.com/v1/urlNotifications:publish"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}"
+            "Authorization": f"Bearer {credentials.token}"
         }
-        payload = {
-            "url": url_limpa,
-            "type": "URL_UPDATED"
-        }
-
+        payload = {"url": url_limpa, "type": "URL_UPDATED"}
         res = requests.post(endpoint, headers=headers, json=payload)
         if res.status_code == 200:
-            print(f"🚀 Google Indexing API: Solicitada indexação com sucesso para -> {url_limpa}")
-        else:
-            print(f"❌ Erro na Google Indexing API ({res.status_code}): {res.text}")
+            print(f"🚀 Google Indexing API: Indexação solicitada para -> {url_limpa}")
     except Exception as e:
-        print(f"❌ Erro ao enviar para Google Indexing API: {e}")
+        print(f"❌ Erro na Google Indexing API: {e}")
 
 def enviar_notificacao_telegram(nome_jogo, versao_jogo, id_jogo):
-    """Envia mensagem no Telegram com a foto oficial do site."""
+    """Envia notificação formatada para o Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram não configurado nos Secrets. Pulando notificação.")
         return
 
     mensagem = (
@@ -92,7 +86,7 @@ def enviar_notificacao_telegram(nome_jogo, versao_jogo, id_jogo):
         f"🎮 <b>Jogo:</b> {nome_jogo}\n"
         f"📦 <b>Versão:</b> {versao_jogo}\n"
         f"🔗 <b>Página:</b> <a href='{PAGINA_INICIAL_BLOG}'>Baixar no Blog</a>\n\n"
-        f"⚡ <i>Nova versão disponível no servidor! Atualize os dados no Blogger se necessário.</i>"
+        f"⚡ <i>Link direto verificado e atualizado com sucesso!</i>"
     )
 
     url_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -106,26 +100,15 @@ def enviar_notificacao_telegram(nome_jogo, versao_jogo, id_jogo):
     try:
         res = requests.post(url_api, json=payload)
         if res.status_code != 200:
-            url_api_msg = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload_msg = {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": mensagem,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False
-            }
-            res = requests.post(url_api_msg, json=payload_msg)
-
-        if res.status_code == 200:
-            print(f"📢 Notificação enviada para o Telegram: {nome_jogo} ({versao_jogo})")
-        else:
-            print(f"❌ Erro ao enviar Telegram: {res.text}")
+            url_msg = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            requests.post(url_msg, json={"chat_id": TELEGRAM_CHAT_ID, "text": mensagem, "parse_mode": "HTML"})
+        print(f"📢 Telegram notificado: {nome_jogo}")
     except Exception as e:
-        print(f"❌ Erro na API do Telegram: {e}")
+        print(f"❌ Erro no Telegram: {e}")
 
 def enviar_notificacao_whatsapp(nome_jogo, versao_jogo, id_jogo):
-    """Envia mensagem no WhatsApp via GREEN-API com Foto + Legenda."""
+    """Envia notificação para o grupo do WhatsApp via GREEN-API."""
     if not GREEN_API_INSTANCE or not GREEN_API_TOKEN or not GREEN_API_GROUP_ID:
-        print("⚠️ GREEN-API não configurada nos Secrets. Pulando WhatsApp.")
         return
 
     chat_id = GREEN_API_GROUP_ID.strip()
@@ -137,7 +120,7 @@ def enviar_notificacao_whatsapp(nome_jogo, versao_jogo, id_jogo):
         f"🎮 *Jogo:* {nome_jogo}\n"
         f"📦 *Versão:* {versao_jogo}\n"
         f"🔗 *Página:* {PAGINA_INICIAL_BLOG}\n\n"
-        f"⚡ _Nova versão disponível no servidor! Atualize os dados no Blogger se necessário._"
+        f"⚡ _Link direto verificado e atualizado no servidor!_"
     )
 
     url_file = f"https://api.green-api.com/waInstance{GREEN_API_INSTANCE}/sendFileByUrl/{GREEN_API_TOKEN}"
@@ -149,27 +132,15 @@ def enviar_notificacao_whatsapp(nome_jogo, versao_jogo, id_jogo):
     }
 
     try:
-        print(f"🔄 Enviando WhatsApp (Foto + Legenda) para: {chat_id}")
         res = requests.post(url_file, json=payload_file)
-
         if res.status_code != 200:
-            print("⚠️ Falha no envio de arquivo. Tentando enviar como texto simples...")
             url_msg = f"https://api.green-api.com/waInstance{GREEN_API_INSTANCE}/sendMessage/{GREEN_API_TOKEN}"
-            payload_msg = {
-                "chatId": chat_id,
-                "message": mensagem
-            }
-            res = requests.post(url_msg, json=payload_msg)
-
-        if res.status_code == 200:
-            print(f"🟢 Notificação enviada com sucesso para o WhatsApp: {nome_jogo} ({versao_jogo})")
-        else:
-            print(f"❌ Falha ao enviar WhatsApp. Verifique as credenciais no GitHub.")
+            requests.post(url_msg, json={"chatId": chat_id, "message": mensagem})
+        print(f"🟢 WhatsApp notificado: {nome_jogo}")
     except Exception as e:
-        print(f"❌ Erro crítico na API do WhatsApp: {e}")
+        print(f"❌ Erro no WhatsApp: {e}")
 
 def buscar_dados_atuais_firebase(id_jogo):
-    """Consulta os dados atuais salvos no Firebase."""
     firebase_base_url = "https://meublog-apks-default-rtdb.firebaseio.com"
     try:
         res = requests.get(f"{firebase_base_url}/links/{id_jogo}.json")
@@ -180,57 +151,69 @@ def buscar_dados_atuais_firebase(id_jogo):
     return {}
 
 def extrair_id_jogo(url_origem):
-    """Extrai o ID correto do jogo ignorando sufixos como /download/, /0/, /1/, .html, etc."""
-    url_limpa = url_origem.split(']')[0].rstrip('/')
-    partes = url_limpa.split('/')
+    """Extrai um ID limpo e seguro a partir de qualquer URL de jogo."""
+    url_limpa = url_origem.split('?')[0].rstrip('/')
+    slug = url_limpa.split('/')[-1] if '/' in url_limpa else url_limpa
     
-    partes_filtradas = [
-        p for p in partes 
-        if p and p not in ['download', 'file'] and not p.isdigit()
-    ]
-    
-    if partes_filtradas:
-        id_jogo = partes_filtradas[-1]
-    else:
-        id_jogo = "jogo"
-        
-    id_jogo = id_jogo.replace('.html', '').replace('.apk', '')
-    return id_jogo
+    for ext in ['.html', '.htm', '.php', '.apk']:
+        if slug.endswith(ext):
+            slug = slug[:-len(ext)]
+            
+    slug = re.sub(r'[^a-zA-Z0-9\-_]', '', slug)
+    return slug if slug else "jogo-game"
 
-def extrair_versao_do_texto_ou_link(texto_ou_url):
-    """Extrai padrões numéricos de versão (ex: 3.8.0, 4.2.1, 1.23.4) de strings ou URLs de download."""
+def limpar_nome_jogo(titulo_bruto, id_slug):
+    """Transforma o título da página num nome limpo do jogo."""
+    if not titulo_bruto or len(titulo_bruto.strip()) < 3:
+        return id_slug.replace('-', ' ').replace('_', ' ').title()
+
+    t = re.sub(r'(?i)\s*(?:-|–|\|)\s*(?:MovGameZone|ModYolo|ModPlays|ApkPure|Blogger|BlogSpot).*$', '', titulo_bruto)
+    t = re.sub(r'(?i)\s*(?:&|with)\s*PPSSPP\s*Settings.*$', '', t)
+    t = re.sub(r'(?i)\s*(?:for\s*Android|PPSSPP\s*CSO|PPSSPP\s*ISO|Free\s*Download).*$', '', t)
+    t = re.sub(r'(?i)\b(?:MOD|APK|ISO|CSO|ZIP|RAR)\b', '', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+
+    if len(t) > 2 and not t.lower().startswith("http"):
+        return t
+    return id_slug.replace('-', ' ').replace('_', ' ').title()
+
+def extrair_versao(texto_ou_url):
     if not texto_ou_url:
-        return None
-    
-    match_filename = re.search(r'[vV]?(\d+[\.\-_]\d+(?:[\.\-_]\d+)+)', texto_ou_url)
-    if match_filename:
-        ver_str = match_filename.group(1).replace('-', '.').replace('_', '.')
-        if not ver_str.startswith("202"):
-            return ver_str
+        return "v1.0.0"
+    match = re.search(r'\b[vV]?(\d+\.\d+(?:\.\d+)*)\b', texto_ou_url)
+    if match:
+        ver = match.group(1)
+        if not ver.startswith("202"):  # Ignora anos como 2020, 2024
+            return f"v{ver}"
+    return "v1.0.0"
 
-    match_std = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', texto_ou_url)
-    if match_std and not match_std.group(1).startswith("202"):
-        return match_std.group(1)
-
-    return None
-
-def e_link_valido_de_download(url):
-    """Verifica se a URL pertence a um servidor de alojamento ou ficheiro de jogo."""
-    if not url or url.startswith("blob:") or "play.google.com" in url:
+def e_link_valido_de_download(url, url_origem=""):
+    if not url or not isinstance(url, str):
         return False
-    
     url_lower = url.lower()
+
+    if url_lower.startswith("blob:") or url_lower.startswith("javascript:") or "play.google.com" in url_lower:
+        return False
+
+    if any(dom in url_lower for dom in DOMINIOS_IGNORAR):
+        return False
+
     if any(dom in url_lower for dom in DOMINIOS_ALOJAMENTO):
         return True
-    
+
     if any(ext in url_lower for ext in EXTENSOES_JOGO):
         return True
-        
+
+    if url_origem:
+        domain_origem = url_origem.split('/')[2] if '/' in url_origem else ""
+        if domain_origem and domain_origem not in url_lower:
+            if any(kw in url_lower for kw in ["download", "file", "get", "cso", "iso", "zip", "mod"]):
+                return True
+
     return False
 
 def salvar_no_firebase_se_novo(url_origem, link_novo, dados_jogo):
     id_jogo = extrair_id_jogo(url_origem)
-
     nome_jogo = dados_jogo.get("nome", id_jogo.replace('-', ' ').title())
     versao_jogo = dados_jogo.get("versao", "v1.0.0")
     foto_url = FOTO_OFICIAL_SITE
@@ -240,10 +223,10 @@ def salvar_no_firebase_se_novo(url_origem, link_novo, dados_jogo):
     versao_atual = dados_atuais.get("versao") if isinstance(dados_atuais, dict) else None
 
     if link_atual == link_novo and versao_atual == versao_jogo:
-        print(f"⏩ O jogo '{id_jogo}' continua com o mesmo link ({versao_jogo}). Nenhuma notificação enviada.")
+        print(f"⏩ O jogo '{id_jogo}' já está atualizado no Firebase com o link: {link_novo}")
         return id_jogo
 
-    print(f"🔄 Nova versão/link detectado para '{id_jogo}'! Atualizando no Firebase...")
+    print(f"🔄 Salvando/Atualizando no Firebase para '{id_jogo}'...")
     firebase_base_url = "https://meublog-apks-default-rtdb.firebaseio.com"
     payload = {
         "url_original": url_origem,
@@ -255,44 +238,31 @@ def salvar_no_firebase_se_novo(url_origem, link_novo, dados_jogo):
 
     try:
         res1 = requests.patch(f"{firebase_base_url}/links/{id_jogo}.json", json=payload)
-        res2 = requests.patch(f"{firebase_base_url}/jogos/{id_jogo}.json", json=payload)
+        requests.patch(f"{firebase_base_url}/jogos/{id_jogo}.json", json=payload)
         if res1.status_code == 200:
-            print(f"✅ Link e versão atualizados no Firebase para: {id_jogo} ({versao_jogo})")
+            print(f"✅ Firebase atualizado para: {id_jogo} ({versao_jogo})")
             enviar_notificacao_telegram(nome_jogo, versao_jogo, id_jogo)
             enviar_notificacao_whatsapp(nome_jogo, versao_jogo, id_jogo)
-            
-            # --- INDEXAÇÃO AUTOMÁTICA NO GOOGLE ---
             notificar_google_indexing_api(PAGINA_INICIAL_BLOG)
-            if "blogspot.com" in url_origem or "k-404" in url_origem:
-                notificar_google_indexing_api(url_origem)
-
     except Exception as e:
         print(f"❌ Erro ao salvar no Firebase: {e}")
-    
+
     return id_jogo
 
 def extrair_link_direto(url_alvo):
     print(f"Iniciando extração para: {url_alvo}")
-
-    id_fallback = extrair_id_jogo(url_alvo).replace('-', ' ').title()
+    id_slug = extrair_id_jogo(url_alvo)
 
     dados_jogo = {
-        "nome": id_fallback,
-        "versao": "",
+        "nome": id_slug.replace('-', ' ').title(),
+        "versao": "v1.0.0",
         "foto": FOTO_OFICIAL_SITE
     }
 
     with sync_playwright() as p:
-        # Configuração do navegador imitando um Samsung Galaxy S23 Ultra real
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-infobars',
-                '--window-size=412,915',
-            ]
+            args=['--no-sandbox', '--disable-setuid-sandbox', '--window-size=412,915']
         )
 
         context = browser.new_context(
@@ -301,169 +271,111 @@ def extrair_link_direto(url_alvo):
             device_scale_factor=3,
             is_mobile=True,
             has_touch=True,
-            locale="pt-BR",
             accept_downloads=True
         )
 
         page = context.new_page()
-
         if stealth_sync:
             stealth_sync(page)
-        else:
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 
         link_final = None
 
-        # Intercepta pedidos e capturas de rede
         def interceptar_requisicao(request):
             nonlocal link_final
             url = request.url
-            if e_link_valido_de_download(url) and not link_final:
+            if e_link_valido_de_download(url, url_alvo) and not link_final:
                 print(f"🎯 Link detectado na rede: {url}")
                 link_final = url
 
         page.on("request", interceptar_requisicao)
 
-        # Captura novas abas/popups abertas por cliques
         def em_nova_pagina(nova_aba):
             nonlocal link_final
             try:
                 nova_aba.wait_for_timeout(2000)
                 url_popup = nova_aba.url
-                if e_link_valido_de_download(url_popup) and not link_final:
-                    print(f"🎯 Link detectado em nova aba/popup: {url_popup}")
+                if e_link_valido_de_download(url_popup, url_alvo) and not link_final:
+                    print(f"🎯 Link detectado em popup: {url_popup}")
                     link_final = url_popup
-            except Exception as e:
+            except:
                 pass
 
         context.on("page", em_nova_pagina)
 
         try:
-            page.goto(url_alvo, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(4000)
+            page.goto(url_alvo, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(3000)
 
-            if "cloudflare" in page.content().lower() or "just a moment" in page.title().lower():
-                print("Detectado Cloudflare Challenge, aguardando resolução...")
-                page.wait_for_timeout(8000)
+            # EXTRAÇÃO DE NOME E VERSÃO DA PÁGINA
+            full_title = page.title() or ""
+            dados_jogo["nome"] = limpar_nome_jogo(full_title, id_slug)
+            dados_jogo["versao"] = extrair_versao(full_title)
 
-            # --- EXTRAÇÃO DE NOME E VERSÃO ---
-            try:
-                full_title = ""
-                try:
-                    og_elem = page.locator('meta[property="og:title"]').first
-                    if og_elem.count() > 0:
-                        full_title = og_elem.get_attribute("content") or ""
-                except:
-                    pass
+            # --- NÍVEL 1: VARREDURA DIRETA DOS LINKS <a> NO DOM ---
+            links_dom = page.eval_on_selector_all("a[href]", """
+                elements => elements.map(e => ({
+                    href: e.href,
+                    text: (e.innerText || '').trim()
+                }))
+            """)
 
-                if not full_title:
-                    full_title = page.title() or ""
-
-                # 1. TENTA VIA JS NO DOM
-                num_versao = page.evaluate(r'''() => {
-                    const elements = Array.from(document.querySelectorAll('tr, td, th, div, li, span, p'));
-                    for (let el of elements) {
-                        const txt = (el.innerText || '').trim();
-                        if (/^(version|versão)$/i.test(txt) || /^version\s*:/i.test(txt) || /^versão\s*:/i.test(txt)) {
-                            const parentText = el.parentElement ? el.parentElement.innerText : '';
-                            const match = parentText.match(/\b(\d+\.\d+(?:\.\d+)*)\b/);
-                            if (match && match[1] && !match[1].startsWith('202')) {
-                                return match[1];
-                            }
-                        }
-                    }
-                    return null;
-                }''')
-
-                # 2. SE NÃO ACHOU, EXTRAI DO TÍTULO COMPLETO
-                if not num_versao and full_title:
-                    num_versao = extrair_versao_do_texto_ou_link(full_title)
-
-                # 3. EXTRAÇÃO E LIMPEZA DO NOME
-                if full_title and len(full_title.strip()) > 3:
-                    nome_limpo = re.sub(r'(?i)\s*(?:MOD|APK|v?\d+\.\d+.*|\(.*?\)|-|–|Download).*$', '', full_title).strip()
-                    nome_limpo = re.sub(r'(?i)modyolo\.com|modplays\.com|modyolo|modplays|movgamezone\.com|movgamezone', '', nome_limpo).strip()
-                    if nome_limpo and len(nome_limpo) > 1 and nome_limpo.lower() != "download":
-                        dados_jogo["nome"] = nome_limpo
-
-                if num_versao:
-                    dados_jogo["versao"] = f"v{num_versao.lstrip('vV')}"
-
-            except Exception as err_meta:
-                print(f"⚠️ Erro ao extrair metadados da página: {err_meta}")
-
-            # --- PRIMEIRO PASSO: Varredura direta de links no DOM ---
-            hrefs = page.eval_on_selector_all("a[href]", "elements => elements.map(e => e.href)")
-            for href in hrefs:
-                if e_link_valido_de_download(href):
-                    print(f"🎯 Link direto de alojamento encontrado no DOM: {href}")
+            # Primeiro procura links que NÃO sejam SaveData
+            for item in links_dom:
+                href = item["href"]
+                texto = item["text"].upper()
+                if e_link_valido_de_download(href, url_alvo) and "SAVEDATA" not in texto and "SAVE DATA" not in texto:
+                    print(f"🎯 Link principal de jogo encontrado no DOM: {href}")
                     link_final = href
                     break
 
-            # --- SEGUNDO PASSO: Clicar nos botões de download caso não tenha achado direto ---
+            # Se não achou link sem SaveData, pega qualquer link válido no DOM
+            if not link_final:
+                for item in links_dom:
+                    href = item["href"]
+                    if e_link_valido_de_download(href, url_alvo):
+                        print(f"🎯 Link encontrado no DOM: {href}")
+                        link_final = href
+                        break
+
+            # --- NÍVEL 2: CLICAR NOS BOTÕES SE AINDA NÃO ENCONTROU ---
             if not link_final:
                 print("Procurando e clicando em botões de download na página...")
                 botoes = page.locator("a, button").all()
                 for b in botoes:
                     try:
-                        texto = (b.inner_text() or "").strip()
+                        texto = (b.inner_text() or "").strip().lower()
                         href = b.get_attribute("href") or ""
-                        
-                        if e_link_valido_de_download(href):
+
+                        if e_link_valido_de_download(href, url_alvo):
                             link_final = href
-                            print(f"🎯 Encontrado via atributo href do botão: {href}")
                             break
 
-                        texto_lower = texto.lower()
-                        href_lower = href.lower()
-
-                        # Identifica botões típicos de download (Modsfire, Sharemods, Download ISO, etc.)
-                        if ("download" in texto_lower or "download" in href_lower or "modsfire" in texto_lower or "sharemods" in texto_lower or "cso" in texto_lower or "iso" in texto_lower) and "play.google.com" not in href_lower:
+                        if any(kw in texto for kw in ["download", "modsfire", "m0dsfire", "sharemods", "iso", "cso", "zip", "rar"]):
                             print(f"👆 Clicando no botão: '{texto}' -> {href}")
-                            b.click(force=True, timeout=4000)
+                            b.click(force=True, timeout=3000)
                             page.wait_for_timeout(3000)
-
                             if link_final:
                                 break
                     except:
                         continue
 
-            print("Aguardando carregamento final da página/redirecionamento...")
-            page.wait_for_timeout(5000)
-
-            # --- TERCEIRO PASSO: Varredura final pós-clique ---
-            if not link_final:
-                hrefs_finais = page.eval_on_selector_all("a[href]", "elements => elements.map(e => e.href)")
-                for href in hrefs_finais:
-                    if e_link_valido_de_download(href):
-                        link_final = href
-                        break
-
-            # 4. EXTRAÇÃO DE SEGURANÇA PARA A VERSÃO
-            if not dados_jogo["versao"] or dados_jogo["versao"] == "v1.0.0":
-                ver_do_link = extrair_versao_do_texto_ou_link(link_final or "")
-                if ver_do_link:
-                    dados_jogo["versao"] = f"v{ver_do_link.lstrip('vV')}"
-                else:
-                    ver_da_url = extrair_versao_do_texto_ou_link(url_alvo)
-                    if ver_da_url:
-                        dados_jogo["versao"] = f"v{ver_da_url.lstrip('vV')}"
-                    else:
-                        dados_jogo["versao"] = "v1.0.0"
+            # Se achou versão melhor no link final
+            if link_final:
+                ver_link = extrair_versao(link_final)
+                if ver_link != "v1.0.0":
+                    dados_jogo["versao"] = ver_link
 
             print(f"🎯 Metadados Extraídos -> Jogo: '{dados_jogo['nome']}' | Versão: '{dados_jogo['versao']}'")
 
         except Exception as e:
-            print(f"Erro na navegação: {e}")
+            print(f"⚠️ Erro durante a navegação: {e}")
 
         browser.close()
         return link_final, dados_jogo
 
 def salvar_url_na_lista(url):
-    """Guarda a URL no arquivo jogos.txt para o robô monitorar sozinho depois."""
     arquivo = "jogos.txt"
     urls_existentes = set()
-    
     if os.path.exists(arquivo):
         with open(arquivo, "r", encoding="utf-8") as f:
             urls_existentes = set(line.strip() for line in f if line.strip())
@@ -471,10 +383,8 @@ def salvar_url_na_lista(url):
     if url not in urls_existentes:
         with open(arquivo, "a", encoding="utf-8") as f:
             f.write(f"{url}\n")
-        print(f"📝 URL salva em {arquivo} para monitoramento automático.")
 
 def processar_jogo(url_alvo):
-    """Executa a verificação e atualização de um único jogo."""
     print(f"\n==================================================")
     link, dados_jogo = extrair_link_direto(url_alvo)
     if link:
@@ -487,16 +397,13 @@ def processar_jogo(url_alvo):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].startswith("http"):
-        url_single = sys.argv[1]
-        processar_jogo(url_single)
+        processar_jogo(sys.argv[1])
     else:
         arquivo_jogos = "jogos.txt"
         if os.path.exists(arquivo_jogos):
             with open(arquivo_jogos, "r", encoding="utf-8") as f:
                 lista_urls = [linha.strip() for linha in f if linha.strip()]
-            
-            print(f"🤖 Rodando em modo automático. {len(lista_urls)} jogo(s) para verificar...")
             for url in lista_urls:
                 processar_jogo(url)
         else:
-            print("⚠️ Nenhuma URL cadastrada no 'jogos.txt'. Adicione uma URL manualmente primeiro.")
+            print("⚠️ Nenhuma URL informada nem ficheiro 'jogos.txt' encontrado.")
